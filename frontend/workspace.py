@@ -1,0 +1,178 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from PySide6.QtCore import Signal
+from PySide6.QtGui import QTextCursor
+from PySide6.QtWidgets import (
+    QFrame, QHBoxLayout, QLabel, QPushButton, QTextEdit, QVBoxLayout, QWidget,
+)
+
+
+class Workspace(QWidget):
+    back_requested = Signal()
+    environment_check_requested = Signal()
+    stop_requested = Signal()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setObjectName("workspace")
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(18, 14, 18, 16)
+        root.setSpacing(12)
+        top = QHBoxLayout()
+        back = QPushButton("←  Dashboard")
+        back.setObjectName("textButton")
+        back.clicked.connect(self.back_requested.emit)
+        top.addWidget(back)
+        top.addStretch(1)
+        self.project_title = QLabel("No project open")
+        self.project_title.setObjectName("topProject")
+        top.addWidget(self.project_title)
+        root.addLayout(top)
+
+        body = QHBoxLayout()
+        body.setSpacing(12)
+        sidebar = QFrame()
+        sidebar.setObjectName("panel")
+        sidebar.setFixedWidth(198)
+        side = QVBoxLayout(sidebar)
+        side.setContentsMargins(16, 18, 16, 16)
+        side.setSpacing(9)
+        label = QLabel("PROJECT PIPELINE")
+        label.setObjectName("eyebrow")
+        side.addWidget(label)
+        for item in ("01  Input images", "02  Camera poses", "03  Train scene", "04  Optimize", "05  Evaluate"):
+            row = QLabel(item)
+            row.setObjectName("pipelineItem")
+            side.addWidget(row)
+        side.addStretch(1)
+        self.project_path = QLabel("Create or open a project to begin.")
+        self.project_path.setObjectName("mutedText")
+        self.project_path.setWordWrap(True)
+        side.addWidget(self.project_path)
+        body.addWidget(sidebar)
+
+        center = QVBoxLayout()
+        center.setSpacing(12)
+        overview = QFrame()
+        overview.setObjectName("panel")
+        overview_layout = QVBoxLayout(overview)
+        overview_layout.setContentsMargins(22, 20, 22, 22)
+        header = QLabel("Workspace overview")
+        header.setObjectName("sectionTitle")
+        overview_layout.addWidget(header)
+        self.welcome = QLabel("Your project workspace is ready.")
+        self.welcome.setObjectName("mutedText")
+        overview_layout.addWidget(self.welcome)
+        metrics = QHBoxLayout()
+        metrics.setSpacing(10)
+        for value, caption in (("—", "Images"), ("—", "Training jobs"), ("—", "Scenes")):
+            metric = QFrame()
+            metric.setObjectName("metricCard")
+            metric_layout = QVBoxLayout(metric)
+            number = QLabel(value)
+            number.setObjectName("metricValue")
+            name = QLabel(caption)
+            name.setObjectName("mutedText")
+            metric_layout.addWidget(number)
+            metric_layout.addWidget(name)
+            metrics.addWidget(metric)
+        overview_layout.addLayout(metrics)
+        center.addWidget(overview, 1)
+
+        controls = QFrame()
+        controls.setObjectName("panel")
+        controls_layout = QVBoxLayout(controls)
+        controls_layout.setContentsMargins(18, 16, 18, 16)
+        control_header = QHBoxLayout()
+        status_label = QLabel("PROCESS CONTROL")
+        status_label.setObjectName("eyebrow")
+        control_header.addWidget(status_label)
+        control_header.addStretch(1)
+        self.status = QLabel("NOT_STARTED")
+        self.status.setObjectName("statusPill")
+        control_header.addWidget(self.status)
+        controls_layout.addLayout(control_header)
+        actions = QHBoxLayout()
+        run = QPushButton("Check Python environment")
+        run.setObjectName("accentButton")
+        run.clicked.connect(self.environment_check_requested.emit)
+        self.stop_button = QPushButton("Stop")
+        self.stop_button.setObjectName("secondaryButton")
+        self.stop_button.setEnabled(False)
+        self.stop_button.clicked.connect(self.stop_requested.emit)
+        actions.addWidget(run)
+        actions.addWidget(self.stop_button)
+        actions.addStretch(1)
+        controls_layout.addLayout(actions)
+        center.addWidget(controls)
+        body.addLayout(center, 1)
+
+        right = QFrame()
+        right.setObjectName("panel")
+        right.setFixedWidth(226)
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(16, 18, 16, 16)
+        right_title = QLabel("Training panel")
+        right_title.setObjectName("sectionTitle")
+        right_layout.addWidget(right_title)
+        for heading, value in (("STATUS", "Waiting"), ("ITERATION", "Available when training starts"),
+                               ("ELAPSED", "—"), ("LATEST UPDATE", "No training logs yet")):
+            h = QLabel(heading)
+            h.setObjectName("eyebrow")
+            v = QLabel(value)
+            v.setObjectName("mutedText")
+            v.setWordWrap(True)
+            right_layout.addWidget(h)
+            right_layout.addWidget(v)
+            right_layout.addSpacing(10)
+        right_layout.addStretch(1)
+        body.addWidget(right)
+        root.addLayout(body, 1)
+
+        console_box = QFrame()
+        console_box.setObjectName("panel")
+        console_layout = QVBoxLayout(console_box)
+        console_layout.setContentsMargins(14, 10, 14, 12)
+        console_layout.setSpacing(7)
+        console_head = QHBoxLayout()
+        console_label = QLabel("CONSOLE  /  PROCESS OUTPUT")
+        console_label.setObjectName("eyebrow")
+        console_head.addWidget(console_label)
+        console_head.addStretch(1)
+        clear = QPushButton("Clear")
+        clear.setObjectName("textButton")
+        clear.clicked.connect(lambda: self.console.clear())
+        console_head.addWidget(clear)
+        console_layout.addLayout(console_head)
+        self.console = QTextEdit()
+        self.console.setObjectName("console")
+        self.console.setReadOnly(True)
+        self.console.setPlaceholderText("Process output and training logs will appear here.")
+        self.console.setFixedHeight(126)
+        console_layout.addWidget(self.console)
+        root.addWidget(console_box)
+
+    def set_project(self, path: Path) -> None:
+        self.project_title.setText(path.name)
+        self.project_path.setText(str(path))
+        self.welcome.setText("Project folders are ready. Add images to input/images to begin.")
+
+    def append_output(self, text: str) -> None:
+        cursor = self.console.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self.console.setTextCursor(cursor)
+        self.console.insertPlainText(text)
+        self.console.ensureCursorVisible()
+
+    def set_process_state(self, state: str) -> None:
+        self.status.setText(state)
+        self.stop_button.setEnabled(state in {"STARTING", "RUNNING", "STOPPING"})
+
+
+
+
