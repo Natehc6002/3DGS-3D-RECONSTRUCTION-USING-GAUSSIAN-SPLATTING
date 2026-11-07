@@ -1,4 +1,4 @@
-"""Run Brush training on a project folder.
+﻿"""Run Brush training on a project folder.
 
 Project layout (inputs never modified):
   <project>/colmap/undistorted   Brush input (images/ + sparse/)
@@ -94,7 +94,7 @@ def main():
                     log.write(msg + "\n")
                     log.flush()
 
-        print("Training started. Brush prints no console output.")
+        print("Training started. Brush draws its own progress bar (not shown with --with-viewer).")
         print(f"Watching {out} for exports...")
         proc = subprocess.Popen(cmd)
         try:

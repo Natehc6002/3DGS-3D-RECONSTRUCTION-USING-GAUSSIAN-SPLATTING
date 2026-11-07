@@ -137,3 +137,31 @@ Existing experiment results on this hardware. They are not guaranteed for other 
 | Integration test project, 1,000 steps, checkpoints every 500 | training took 46 s, final PLY 2.5 MB |
 
 Known-good scene for integration testing: `figure_30k_30000.ply` (shared outside Git, together with its scene metadata).
+
+## Video mode (tested 7 Nov 2026)
+
+    python -m backend.preprocessing.run --project <project> --video <clip.mp4> --fps 3 --max-frames 150 --blur-threshold 20
+
+- The runner keeps every Kth source frame (30 fps source, `--fps 3` keeps every 10th).
+- Frames are written to `input/images.tmp` and moved to `input/images` when extraction finishes. A killed run leaves no half-filled folder.
+- If `input/images` already has images, the runner exits with an error and changes nothing. Empty it yourself first.
+- `--max-frames` stops extraction early. The runner prints a WARN with how much of the video was read.
+- Blur is warn-only. Images are never deleted or modified. Scores of all flagged frames go to `logs/preprocessing.log`.
+- Blur threshold depends on resolution. On a 2160x3840 clip, threshold 20 flagged 2 of 265 frames and threshold 50 flagged 90 (34%). Compare scores within one dataset.
+
+## COLMAP on video frames
+
+- The COLMAP runner prints how many images each sparse model holds and warns if `sparse/0` holds under 80% of the images or if several models exist. Brush uses `sparse/0` only.
+- `--data-type video` (sequential matching) is available. Default is `individual`. On the test clip both gave the same `sparse/0` (154 of 265 frames).
+
+### Test clip findings (44 s, 4K phone video)
+- Frames at every 10th and every 5th gave the same break at 25.7 s, so frame density was not the cause.
+- At the break, plain wall filled most of the frame and a mirror reflected a monitor. Few trackable features, and reflections give false matches.
+- Training on the result works (6000 steps, 505 s, 15.7 MB PLY, no VRAM error at 4K), but the scene covers only the first 25.7 s.
+
+### Capture advice
+- Pick a subject with texture across the whole frame. Keep mirrors, glass and screens out of view.
+- Avoid framing that is mostly plain wall.
+- Move around the subject with it always in view. No turning in place, no camera roll.
+- About 20 s per loop, slow, exposure and focus locked.
+- Check blur warnings and the `sparse models:` report before training. Reshoot if sparse/0 holds under 80%.
