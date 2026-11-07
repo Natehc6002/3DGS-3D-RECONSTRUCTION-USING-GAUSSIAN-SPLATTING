@@ -119,13 +119,13 @@ Reads `colmap/undistorted/`. Writes PLY files to `checkpoints/` named `scene_<N>
 
 The runner refuses to start if matching PLY files already exist in `checkpoints/` or the final file already exists in `scenes/original/`. Move or delete them yourself. Nothing is overwritten.
 
-Exit codes: 0 success, 2 bad arguments or missing input, 3 Brush finished without writing a PLY, 130 interrupted with Ctrl+C, otherwise Brush's own exit code.
+Exit codes: 0 success, 2 bad arguments or missing input, 3 Brush finished without writing a PLY, 4 training stopped before the final step (nothing is copied to `scenes/original/`), 130 interrupted with Ctrl+C, otherwise Brush's own exit code.
 
 ## 4. Observed behaviour
 
 - Brush prints a live progress bar to the console (for example `605/1000 Steps`) when launched from the runner. Whether the same output can be captured through `QProcess` has not been tested.
 - The runner reports each new PLY it sees in `checkpoints/`. The progress bar redraw can hide these lines in the console, but they are written to `logs/brush.log`.
-- `--with-viewer` opens Brush's viewer window by itself. Tested on a 6,000-step run with checkpoints every 1,000 steps: the scene appears and changes as training progresses, no manual refresh is needed, and orbit, pan and zoom work during training. The viewer is part of the Brush process, so the live preview comes from Brush itself rather than from reloading checkpoint files. Behaviour when the viewer window is closed mid-training has not been tested.
+- `--with-viewer` opens Brush's viewer window by itself. Tested on a 6,000-step run with checkpoints every 1,000 steps: the scene appears and changes as training progresses, no manual refresh is needed, and orbit, pan and zoom work during training. The viewer is part of the Brush process, so the live preview comes from Brush itself rather than from reloading checkpoint files. The viewer window stays open after training finishes. Closing the window during training stops the training run, so no final scene is written.
 
 ## 5. Reference results
 
