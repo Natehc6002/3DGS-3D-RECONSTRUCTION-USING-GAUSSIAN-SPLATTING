@@ -1,4 +1,4 @@
-﻿"""Run Brush training on a project folder.
+"""Run Brush training on a project folder.
 
 Project layout (inputs never modified):
   <project>/colmap/undistorted   Brush input (images/ + sparse/)
@@ -120,8 +120,12 @@ def main():
     final_src = out / final_name
     if not final_src.is_file():
         plys = sorted(out.glob(prefix + "*.ply"), key=lambda p: p.stat().st_mtime)
-        final_src = plys[-1]
-        print(f"WARN: {final_name} not found, using newest export {final_src.name}")
+        newest = plys[-1]
+        if int(newest.stem.rsplit("_", 1)[1]) != args.steps:
+            print(f"ERROR: training stopped before step {args.steps}. "
+                  f"Last export: {newest.name}. Nothing copied to {scenes}.")
+            return 4
+        final_src = newest
     scenes.mkdir(parents=True, exist_ok=True)
     shutil.copy2(final_src, scenes / final_src.name)
 
