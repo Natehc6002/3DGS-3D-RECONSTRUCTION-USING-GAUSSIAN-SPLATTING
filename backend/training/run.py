@@ -2,13 +2,15 @@
 
 Project layout (inputs never modified):
   <project>/colmap/undistorted   Brush input (images/ + sparse/)
-  <project>/output/              PLY exports (created)
+  <project>/checkpoints/         periodic PLY exports (created)
+  <project>/scenes/original/     final PLY copied here (created)
   <project>/logs/brush.log       run info log
 
 Brush is a GUI exe and prints nothing to the console, so progress is
 shown by watching the export folder for new PLY files.
 """
 import argparse
+import shutil
 import subprocess
 import sys
 import time
@@ -32,7 +34,8 @@ def main():
     project = Path(args.project).resolve()
     brush = Path(args.brush)
     dataset = project / "colmap" / "undistorted"
-    out = project / "output"
+    out = project / "checkpoints"
+    scenes = project / "scenes" / "original"
     logs = project / "logs"
 
     if not brush.is_file():
@@ -49,8 +52,12 @@ def main():
     name = (f"scene_{args.steps // 1000}k_{{iter}}.ply"
             if args.steps >= 1000 else "scene_{iter}.ply")
     prefix = name.split("{iter}")[0]
+    final_name = name.replace("{iter}", str(args.steps))
     if out.is_dir() and list(out.glob(prefix + "*.ply")):
         print(f"ERROR: {out} already has {prefix}*.ply. Move or delete them yourself.")
+        return 2
+    if (scenes / final_name).exists():
+        print(f"ERROR: {scenes / final_name} already exists. Move or delete it yourself.")
         return 2
 
     out.mkdir(parents=True, exist_ok=True)
@@ -110,7 +117,16 @@ def main():
         print(f"ERROR: Brush finished but wrote no new PLY in {out}")
         return 3
 
-    print(f"OK. Done in {time.time() - start:.0f}s. PLY files in {out}")
+    final_src = out / final_name
+    if not final_src.is_file():
+        plys = sorted(out.glob(prefix + "*.ply"), key=lambda p: p.stat().st_mtime)
+        final_src = plys[-1]
+        print(f"WARN: {final_name} not found, using newest export {final_src.name}")
+    scenes.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(final_src, scenes / final_src.name)
+
+    print(f"OK. Done in {time.time() - start:.0f}s. "
+          f"Final scene: {scenes / final_src.name}")
     return 0
 
 
