@@ -3,15 +3,19 @@
 Project layout (existing images are never overwritten or modified):
   <project>/input/video/                 optional source video
   <project>/input/images/                images to validate (or frames go here)
-  <project>/logs/preprocessing.log       run info log
+  <project>/input/images.tmp/            scratch while extracting, removed after
+  <project>/logs/preprocessing.log       run info log (full blur list)
 
 Modes:
   default       validate every image in input/images
   --video FILE  extract frames into input/images, then validate
 
+Frames are written to images.tmp first and moved into input/images only when
+extraction finishes. A killed run leaves no half-filled images folder.
 Validation checks: readable, resolution mix, blur (warning only), count.
 """
 import argparse
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -28,16 +32,18 @@ def read_image(path):
     return cv2.imdecode(data, cv2.IMREAD_COLOR) if data.size else None
 
 
-def extract_frames(video, images, fps, max_frames, say):
+def extract_frames(video, dest, fps, max_frames, say):
     cap = cv2.VideoCapture(str(video))
     if not cap.isOpened():
         say(f"ERROR: cannot open video {video}")
         return None
     src_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    total = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
     step = max(1, round(src_fps / fps))
     say(f"video: {src_fps:.1f} fps source, keeping every {step}th frame")
-    images.mkdir(parents=True, exist_ok=True)
+    dest.mkdir(parents=True, exist_ok=True)
     idx = saved = 0
+    capped = False
     while True:
         got, frame = cap.read()
         if not got:
@@ -46,13 +52,19 @@ def extract_frames(video, images, fps, max_frames, say):
             enc_ok, buf = cv2.imencode(".jpg", frame,
                                        [cv2.IMWRITE_JPEG_QUALITY, 95])
             if enc_ok:
-                buf.tofile(str(images / f"frame_{saved + 1:05d}.jpg"))
+                buf.tofile(str(dest / f"frame_{saved + 1:05d}.jpg"))
                 saved += 1
                 if max_frames and saved >= max_frames:
+                    capped = True
                     break
         idx += 1
     cap.release()
-    say(f"extracted {saved} frames to {images}")
+    say(f"extracted {saved} frames")
+    if capped and total and idx + step < total:
+        say(f"WARN: stopped at --max-frames {max_frames} after "
+            f"{(idx + 1) / src_fps:.1f}s of {total / src_fps:.1f}s. "
+            "Rest of the video was not read. Lower --fps or raise "
+            "--max-frames.")
     return saved
 
 
@@ -71,8 +83,9 @@ def validate(images, blur_threshold, say):
         h, w = img.shape[:2]
         sizes[(w, h)] = sizes.get((w, h), 0) + 1
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        if cv2.Laplacian(gray, cv2.CV_64F).var() < blur_threshold:
-            blurry.append(p.name)
+        score = cv2.Laplacian(gray, cv2.CV_64F).var()
+        if score < blur_threshold:
+            blurry.append((p.name, score))
 
     say(f"images: {len(files)} found, {len(files) - len(bad)} readable")
     for (w, h), n in sorted(sizes.items(), key=lambda kv: -kv[1]):
@@ -80,9 +93,16 @@ def validate(images, blur_threshold, say):
     if len(sizes) > 1:
         say("WARN: mixed resolutions, check your COLMAP camera settings.")
     if blurry:
-        more = " ..." if len(blurry) > 10 else ""
-        say(f"WARN: {len(blurry)} images below blur threshold "
-            f"{blur_threshold:g}: {', '.join(blurry[:10])}{more}")
+        pct = 100 * len(blurry) / len(files)
+        names = ", ".join(n for n, _ in blurry[:10])
+        more = " ... (full list in logs/preprocessing.log)" \
+            if len(blurry) > 10 else ""
+        say(f"WARN: {len(blurry)} images ({pct:.0f}%) below blur threshold "
+            f"{blur_threshold:g}: {names}{more}")
+        if len(blurry) > 10:
+            say("blur scores of all flagged images:", echo=False)
+            for n, s in blurry:
+                say(f"  {n} {s:.1f}", echo=False)
     if len(files) < 20:
         say("WARN: fewer than 20 images. Reconstruction may fail.")
     if bad:
@@ -112,6 +132,7 @@ def main():
 
     project = Path(args.project).resolve()
     images = project / "input" / "images"
+    tmp = project / "input" / "images.tmp"
     logs = project / "logs"
     video = Path(args.video) if args.video else None
 
@@ -129,17 +150,30 @@ def main():
 
     logs.mkdir(parents=True, exist_ok=True)
     with open(logs / "preprocessing.log", "a", encoding="utf-8") as log:
-        def say(msg):
-            print(msg)
+        def say(msg, echo=True):
+            if echo:
+                print(msg)
             log.write(msg + "\n")
             log.flush()
 
         log.write(f"\n[{datetime.now():%Y-%m-%d %H:%M:%S}] "
                   f"preprocessing {project}\n")
         if video:
-            if extract_frames(video, images, args.fps,
-                              args.max_frames, say) is None:
-                return 3
+            if tmp.exists():
+                # scratch folder from an earlier killed run, ours to remove
+                shutil.rmtree(tmp)
+            try:
+                saved = extract_frames(video, tmp, args.fps,
+                                       args.max_frames, say)
+                if not saved:
+                    say("ERROR: no frames extracted")
+                    return 3
+                images.mkdir(parents=True, exist_ok=True)
+                for f in sorted(tmp.iterdir()):
+                    f.replace(images / f.name)
+                say(f"frames saved to {images}")
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
         return validate(images, args.blur_threshold, say)
 
 
