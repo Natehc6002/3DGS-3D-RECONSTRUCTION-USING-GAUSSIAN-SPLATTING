@@ -14,7 +14,7 @@ Scope: data preparation, COLMAP and Brush training (`backend/preprocessing/`, `b
 | opencv-python | 5.0.0.93 |
 | numpy | 2.4.6 |
 
-COLMAP install path on the reference machine: `TODO: fill in path to colmap.exe`
+COLMAP install path on the reference machine: `C:\Tools\COLMAP\bin\colmap.exe`
 
 Python setup (from the repo root):
 
@@ -37,7 +37,7 @@ Every runner takes `--project <folder>` and works inside it. Input images are ne
 │   └── video/               optional source video
 ├── colmap/
 │   ├── database.db
-│   ├── sparse/              raw COLMAP sparse model
+│   ├── sparse/0/            raw COLMAP sparse model
 │   └── undistorted/         Brush input (images/ + sparse/), made by the COLMAP runner
 ├── checkpoints/             periodic PLY exports from Brush
 ├── scenes/
@@ -82,16 +82,23 @@ Video mode has not been tested yet.
 ### 3.2 COLMAP reconstruction and undistortion
 
 ```powershell
-python -m backend.colmap.run --project <project> --colmap "<path\to\colmap.exe>" --quality medium
+python -m backend.colmap.run --project <project> --colmap C:\Tools\COLMAP\bin\colmap.exe --quality medium
 ```
 
-| Argument | Meaning |
-|----------|---------|
-| `--project` | project folder |
-| `--colmap` | path to `colmap.exe` |
-| `--quality` | `low`, `medium`, `high` or `extreme` (see `--help` for the default) |
+| Argument | Default | Meaning |
+|----------|---------|---------|
+| `--project` | required | project folder |
+| `--colmap` | required | path to `colmap.exe` |
+| `--quality` | `medium` | `low`, `medium`, `high` or `extreme` |
 
-Reads `input/images/`, runs COLMAP, then `image_undistorter`. Output: `colmap/undistorted/`. Log: `logs/colmap.log`.
+Reads `input/images/` and runs two COLMAP commands:
+
+1. `automatic_reconstructor` with `--single_camera 1 --dense 0 --use_gpu 1` and the chosen quality. Output: `colmap/database.db` and `colmap/sparse/0/`.
+2. `image_undistorter` from `colmap/sparse/0/` with `--output_type COLMAP`. Output: `colmap/undistorted/`.
+
+Log: `logs/colmap.log`.
+
+Because of `--single_camera 1`, all images are treated as coming from one camera. Use photos of one resolution from one camera. Mixed resolutions (flagged by the preprocessing check) can break the reconstruction.
 
 ### 3.3 Brush training
 
@@ -118,7 +125,7 @@ Exit codes: 0 success, 2 bad arguments or missing input, 3 Brush finished withou
 
 - Brush prints a live progress bar to the console (for example `605/1000 Steps`) when launched from the runner. Whether the same output can be captured through `QProcess` has not been tested.
 - The runner reports each new PLY it sees in `checkpoints/`. The progress bar redraw can hide these lines in the console, but they are written to `logs/brush.log`.
-- `--with-viewer` opens Brush's viewer window. Whether the viewer refreshes from new checkpoints during training has not been verified.
+- `--with-viewer` opens Brush's viewer window by itself. Tested on a 6,000-step run with checkpoints every 1,000 steps: the scene appears and changes as training progresses, no manual refresh is needed, and orbit, pan and zoom work during training. The viewer is part of the Brush process, so the live preview comes from Brush itself rather than from reloading checkpoint files. Behaviour when the viewer window is closed mid-training has not been tested.
 
 ## 5. Reference results
 
