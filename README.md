@@ -19,3 +19,12 @@ python app.py
 See [backend/SETUP.md](backend/SETUP.md) for COLMAP and Brush versions, the project folder layout, and the runner commands.
 
 The desktop app provides project creation/opening and a workspace. Its Brush integration uses the backend runner so the GUI can show checkpoint progress and detect incomplete runs.
+
+## Windows desktop workflow
+
+1. In 3DGS Studio, create or open a project.
+2. Import your images and check them.
+3. Configure COLMAP and Brush using [backend/SETUP.md](backend/SETUP.md).
+4. Run COLMAP to prepare the dataset.
+5. Choose **Train with Brush + viewer**, select `brush_app.exe`, and use the prepared dataset when prompted.
+6. The final PLY scene is saved in the project’s `scenes/original/` folder.
