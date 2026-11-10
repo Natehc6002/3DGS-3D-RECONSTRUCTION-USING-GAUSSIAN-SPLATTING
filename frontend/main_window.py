@@ -5,7 +5,7 @@ import re
 import shutil
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QSettings
 from PySide6.QtWidgets import (
     QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel,
     QLineEdit, QMainWindow, QMessageBox, QStackedWidget, QVBoxLayout, QWidget,
@@ -87,6 +87,9 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(STYLESHEET)
         self.projects = ProjectManager(self)
         self.processes = ProcessManager(self)
+        self.settings = QSettings()
+        self._brush_executable = self.settings.value("brush/executable", "", type=str)
+        self._active_task = ""
         self._training_steps = 0
         self._output_tail = ""
         self._last_progress_step = 0
@@ -103,6 +106,7 @@ class MainWindow(QMainWindow):
         self.workspace.back_requested.connect(lambda: self.stack.setCurrentWidget(self.dashboard))
         self.workspace.environment_check_requested.connect(self._run_environment_check)
         self.workspace.brush_training_requested.connect(self._run_brush_training)
+        self.workspace.open_scene_requested.connect(self._open_scene_in_brush)
         self.workspace.stop_requested.connect(self.processes.stop)
         self.projects.project_opened.connect(self.workspace.set_project)
         self.processes.output_received.connect(self._handle_process_output)
@@ -157,6 +161,8 @@ class MainWindow(QMainWindow):
         )
         if not brush:
             return
+        self._brush_executable = brush
+        self.settings.setValue("brush/executable", brush)
         dataset = QFileDialog.getExistingDirectory(self, "Choose COLMAP undistorted dataset")
         if not dataset:
             return
@@ -203,6 +209,7 @@ class MainWindow(QMainWindow):
             return
 
         self._training_steps = steps
+        self._active_task = "training"
         self._last_progress_step = 0
         self._output_tail = ""
         self.workspace.set_training_progress(0, steps, "Training runner starting")
@@ -231,6 +238,13 @@ class MainWindow(QMainWindow):
         self._output_tail = scan[-256:]
 
     def _handle_process_finished(self, exit_code: int, succeeded: bool) -> None:
+        task = self._active_task
+        self._active_task = ""
+        if task != "training":
+            if task == "viewer":
+                self.workspace.set_latest_update("Brush viewer closed.")
+                self.workspace.append_output("Brush viewer closed.\n")
+            return
         if succeeded:
             scenes = self.projects.current_project / "scenes" / "original"
             finals = sorted(scenes.glob("*.ply"), key=lambda path: path.stat().st_mtime) if scenes.exists() else []
@@ -255,11 +269,46 @@ class MainWindow(QMainWindow):
     def _run_environment_check(self) -> None:
         if self.processes.is_running:
             return
+        self._active_task = "environment"
         self.workspace.append_output("$ Python environment check\n")
         code = "import sys; print('Python', sys.version.split()[0]); print('Executable:', sys.executable)"
         try:
             self.processes.start(sys.executable, ["-c", code])
         except RuntimeError as exc:
+            self.workspace.append_output(f"{exc}\n")
+
+    def _open_scene_in_brush(self) -> None:
+        project = self.projects.current_project
+        if project is None:
+            QMessageBox.information(self, "Open a project", "Open a project before opening a scene.")
+            return
+        if self.processes.is_running:
+            QMessageBox.information(self, "Process running", "Close or stop the current process first.")
+            return
+        scenes = project / "scenes" / "original"
+        if not scenes.is_dir() or not any(scenes.glob("*.ply")):
+            QMessageBox.information(self, "No scenes yet", f"No PLY scenes found in:\n{scenes}")
+            return
+        scene, _ = QFileDialog.getOpenFileName(
+            self, "Choose Gaussian scene", str(scenes), "PLY scenes (*.ply)"
+        )
+        if not scene:
+            return
+        brush = self._brush_executable
+        if not brush or not Path(brush).is_file():
+            brush, _ = QFileDialog.getOpenFileName(
+                self, "Choose Brush executable", "", "Applications (*.exe);;All files (*)"
+            )
+            if not brush:
+                return
+            self._brush_executable = brush
+            self.settings.setValue("brush/executable", brush)
+        self._active_task = "viewer"
+        self.workspace.append_output(f"Opening scene in Brush: {scene}\n")
+        try:
+            self.processes.start(brush, [scene, "--with-viewer"], working_directory=str(project))
+        except RuntimeError as exc:
+            self._active_task = ""
             self.workspace.append_output(f"{exc}\n")
 
 
