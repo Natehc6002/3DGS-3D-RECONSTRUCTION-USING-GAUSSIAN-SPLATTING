@@ -107,6 +107,9 @@ class MainWindow(QMainWindow):
         self.workspace.environment_check_requested.connect(self._run_environment_check)
         self.workspace.brush_training_requested.connect(self._run_brush_training)
         self.workspace.open_scene_requested.connect(self._open_scene_in_brush)
+        self.workspace.import_images_requested.connect(self._import_images)
+        self.workspace.prepare_images_requested.connect(self._run_preprocessing)
+        self.workspace.colmap_requested.connect(self._run_colmap)
         self.workspace.stop_requested.connect(self.processes.stop)
         self.projects.project_opened.connect(self.workspace.set_project)
         self.processes.output_received.connect(self._handle_process_output)
@@ -244,6 +247,14 @@ class MainWindow(QMainWindow):
             if task == "viewer":
                 self.workspace.set_latest_update("Brush viewer closed.")
                 self.workspace.append_output("Brush viewer closed.\n")
+            elif task in {"preprocessing", "colmap"}:
+                label = "Image check" if task == "preprocessing" else "COLMAP"
+                if succeeded:
+                    message = f"{label} completed successfully."
+                else:
+                    message = f"{label} failed with exit code {exit_code}. See the project logs folder."
+                self.workspace.set_latest_update(message)
+                self.workspace.append_output(message + "\n")
             return
         if succeeded:
             scenes = self.projects.current_project / "scenes" / "original"
@@ -307,6 +318,97 @@ class MainWindow(QMainWindow):
         self.workspace.append_output(f"Opening scene in Brush: {scene}\n")
         try:
             self.processes.start(brush, [scene, "--with-viewer"], working_directory=str(project))
+        except RuntimeError as exc:
+            self._active_task = ""
+            self.workspace.append_output(f"{exc}\n")
+
+    def _import_images(self) -> None:
+        project = self.projects.current_project
+        if project is None:
+            QMessageBox.information(self, "Open a project", "Open a project before importing images.")
+            return
+        files, _ = QFileDialog.getOpenFileNames(
+            self, "Choose source images", "",
+            "Images (*.jpg *.jpeg *.png *.bmp *.tif *.tiff);;All files (*)",
+        )
+        if not files:
+            return
+        destination = project / "input" / "images"
+        destination.mkdir(parents=True, exist_ok=True)
+        copied = 0
+        skipped = []
+        for source in files:
+            source_path = Path(source)
+            target = destination / source_path.name
+            if target.exists():
+                skipped.append(source_path.name)
+                continue
+            try:
+                shutil.copy2(source_path, target)
+                copied += 1
+            except OSError as exc:
+                QMessageBox.warning(self, "Image import stopped", f"Copied {copied} image(s).\n{exc}")
+                return
+        summary = f"Imported {copied} image(s) to {destination}."
+        if skipped:
+            summary += f" Skipped {len(skipped)} existing file(s) to avoid overwriting."
+        self.workspace.append_output(summary + "\n")
+        self.workspace.set_latest_update(summary)
+
+    def _run_preprocessing(self) -> None:
+        project = self.projects.current_project
+        if project is None:
+            QMessageBox.information(self, "Open a project", "Open a project before checking images.")
+            return
+        if self.processes.is_running:
+            QMessageBox.information(self, "Process running", "Wait for the current process to finish first.")
+            return
+        self._active_task = "preprocessing"
+        self.workspace.append_output(f"Checking project images: {project / 'input' / 'images'}\n")
+        try:
+            self.processes.start(
+                sys.executable,
+                ["-u", "-m", "backend.preprocessing.run", "--project", str(project)],
+                working_directory=str(Path(__file__).resolve().parents[1]),
+            )
+        except RuntimeError as exc:
+            self._active_task = ""
+            self.workspace.append_output(f"{exc}\n")
+
+    def _run_colmap(self) -> None:
+        project = self.projects.current_project
+        if project is None:
+            QMessageBox.information(self, "Open a project", "Open a project before running COLMAP.")
+            return
+        if self.processes.is_running:
+            QMessageBox.information(self, "Process running", "Wait for the current process to finish first.")
+            return
+        colmap = self.settings.value("colmap/executable", "", type=str)
+        if not colmap or not Path(colmap).is_file():
+            colmap, _ = QFileDialog.getOpenFileName(
+                self, "Choose COLMAP executable", "", "Applications (colmap.exe);;All files (*)"
+            )
+            if not colmap:
+                return
+            self.settings.setValue("colmap/executable", colmap)
+        use_gpu = QMessageBox.question(
+            self,
+            "COLMAP acceleration",
+            "Use NVIDIA GPU acceleration? Choose No to run on CPU if COLMAP crashes during startup.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        ) == QMessageBox.StandardButton.Yes
+        self._active_task = "colmap"
+        mode = "GPU" if use_gpu else "CPU"
+        self.workspace.append_output(f"Starting COLMAP on {project / 'input' / 'images'} using {mode}.\n")
+        try:
+            self.processes.start(
+                sys.executable,
+                ["-u", "-m", "backend.colmap.run", "--project", str(project),
+                 "--colmap", colmap, "--quality", "medium", "--use-gpu",
+                 "1" if use_gpu else "0"],
+                working_directory=str(Path(__file__).resolve().parents[1]),
+            )
         except RuntimeError as exc:
             self._active_task = ""
             self.workspace.append_output(f"{exc}\n")
