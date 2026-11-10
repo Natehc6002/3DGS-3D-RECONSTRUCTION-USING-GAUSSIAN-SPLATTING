@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
@@ -73,5 +74,17 @@ class ProjectManager(QObject):
         self.current_project = project
         self.project_opened.emit(project)
         return project
+
+    def import_scene(self, source: str | Path) -> Path:
+        if self.current_project is None:
+            raise ProjectError("Open or create a project before importing a scene.")
+        source_path = Path(source).expanduser().resolve()
+        if not source_path.is_file() or source_path.suffix.lower() != ".ply":
+            raise ProjectError("Choose an existing PLY scene file.")
+        destination = self.current_project / "scenes" / "original" / source_path.name
+        if destination.exists():
+            raise ProjectError(f"A scene with that name is already in this project: {destination.name}")
+        shutil.copy2(source_path, destination)
+        return destination
 
 

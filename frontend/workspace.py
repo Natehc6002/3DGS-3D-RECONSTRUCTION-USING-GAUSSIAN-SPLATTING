@@ -13,6 +13,7 @@ class Workspace(QWidget):
     back_requested = Signal()
     environment_check_requested = Signal()
     stop_requested = Signal()
+    brush_training_requested = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -101,11 +102,15 @@ class Workspace(QWidget):
         run = QPushButton("Check Python environment")
         run.setObjectName("accentButton")
         run.clicked.connect(self.environment_check_requested.emit)
+        train = QPushButton("Train with Brush + viewer")
+        train.setObjectName("secondaryButton")
+        train.clicked.connect(self.brush_training_requested.emit)
         self.stop_button = QPushButton("Stop")
         self.stop_button.setObjectName("secondaryButton")
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(self.stop_requested.emit)
         actions.addWidget(run)
+        actions.addWidget(train)
         actions.addWidget(self.stop_button)
         actions.addStretch(1)
         controls_layout.addLayout(actions)
@@ -120,8 +125,9 @@ class Workspace(QWidget):
         right_title = QLabel("Training panel")
         right_title.setObjectName("sectionTitle")
         right_layout.addWidget(right_title)
-        for heading, value in (("STATUS", "Waiting"), ("ITERATION", "Available when training starts"),
-                               ("ELAPSED", "—"), ("LATEST UPDATE", "No training logs yet")):
+        self.iteration_value = QLabel("Waiting for training")
+        self.latest_update = QLabel("No training logs yet")
+        for heading, value in (("STATUS", "Waiting"),):
             h = QLabel(heading)
             h.setObjectName("eyebrow")
             v = QLabel(value)
@@ -130,6 +136,22 @@ class Workspace(QWidget):
             right_layout.addWidget(h)
             right_layout.addWidget(v)
             right_layout.addSpacing(10)
+        for heading, value in (("ITERATION", self.iteration_value), ("LATEST UPDATE", self.latest_update)):
+            h = QLabel(heading)
+            h.setObjectName("eyebrow")
+            value.setObjectName("mutedText")
+            value.setWordWrap(True)
+            right_layout.addWidget(h)
+            right_layout.addWidget(value)
+            right_layout.addSpacing(10)
+        elapsed_label = QLabel("ELAPSED")
+        elapsed_label.setObjectName("eyebrow")
+        elapsed = QLabel("—")
+        elapsed.setObjectName("mutedText")
+        right_layout.addWidget(elapsed_label)
+        right_layout.addWidget(elapsed)
+        self.elapsed_value = elapsed
+        right_layout.addSpacing(10)
         right_layout.addStretch(1)
         body.addWidget(right)
         root.addLayout(body, 1)
@@ -168,6 +190,14 @@ class Workspace(QWidget):
         self.console.setTextCursor(cursor)
         self.console.insertPlainText(text)
         self.console.ensureCursorVisible()
+
+    def set_training_progress(self, current: int, total: int, message: str = "") -> None:
+        self.iteration_value.setText(f"{current:,} / {total:,} steps ({100 * current / total:.0f}%)")
+        if message:
+            self.latest_update.setText(message)
+
+    def set_latest_update(self, message: str) -> None:
+        self.latest_update.setText(message)
 
     def set_process_state(self, state: str) -> None:
         self.status.setText(state)
