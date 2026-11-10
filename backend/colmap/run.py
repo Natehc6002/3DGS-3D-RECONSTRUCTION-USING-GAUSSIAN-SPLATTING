@@ -10,6 +10,7 @@ After reconstruction the runner reports how many images each sparse model
 holds and warns if the model Brush will use (sparse/0) is incomplete.
 """
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -19,12 +20,26 @@ EXTS = {".jpg", ".jpeg", ".png"}
 MIN_REGISTERED = 0.8
 
 
+def colmap_environment(executable):
+    """Match the PATH and Qt plugin setup from the Windows COLMAP.bat launcher."""
+    exe = Path(executable).resolve()
+    bin_dir = exe.parent
+    package_root = bin_dir.parent if bin_dir.name.lower() == "bin" else bin_dir
+    env = os.environ.copy()
+    env["PATH"] = str(bin_dir) + os.pathsep + env.get("PATH", "")
+    plugins = package_root / "plugins"
+    if plugins.is_dir():
+        current = env.get("QT_PLUGIN_PATH", "")
+        env["QT_PLUGIN_PATH"] = str(plugins) + (os.pathsep + current if current else "")
+    return env
+
+
 def run(cmd, log):
     log.write("\n$ " + " ".join(cmd) + "\n")
     log.flush()
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, errors="replace",
+        text=True, errors="replace", env=colmap_environment(cmd[0]),
     )
     for line in proc.stdout:
         print(line, end="")
@@ -36,7 +51,8 @@ def run(cmd, log):
 
 def registered_images(colmap, model):
     r = subprocess.run([str(colmap), "model_analyzer", "--path", str(model)],
-                       capture_output=True, text=True, errors="replace")
+                       capture_output=True, text=True, errors="replace",
+                       env=colmap_environment(colmap))
     m = re.search(r"Registered images:\s*(\d+)", r.stdout + r.stderr)
     return int(m.group(1)) if m else None
 
@@ -80,6 +96,8 @@ def main():
     ap.add_argument("--colmap", required=True, help="path to colmap.exe")
     ap.add_argument("--quality", default="medium",
                     choices=["low", "medium", "high", "extreme"])
+    ap.add_argument("--use-gpu", type=int, choices=[0, 1], default=1,
+                    help="use CUDA for feature extraction/matching (1) or CPU (0)")
     ap.add_argument("--data-type", default="individual",
                     choices=["individual", "video", "internet"],
                     help="COLMAP data type. 'video' is meant for ordered "
@@ -98,9 +116,19 @@ def main():
     if not images.is_dir() or not any(images.iterdir()):
         print(f"ERROR: no images in {images}")
         return 2
-    if (out / "sparse").exists():
-        print(f"ERROR: {out / 'sparse'} already exists. "
+    sparse = out / "sparse"
+    if sparse.exists() and any(sparse.iterdir()):
+        print(f"ERROR: {sparse} already contains a reconstruction. "
               "Move or delete it yourself. Script never overwrites.")
+        return 2
+    if (out / "database.db").exists():
+        print(f"ERROR: {out / 'database.db'} already exists. "
+              "Move or delete it yourself. Script never overwrites.")
+        return 2
+    undistorted = out / "undistorted"
+    if undistorted.exists() and any(undistorted.iterdir()):
+        print(f"ERROR: {undistorted} already contains an undistorted dataset. "
+              "Move it aside yourself. Script never overwrites.")
         return 2
 
     out.mkdir(parents=True, exist_ok=True)
@@ -121,7 +149,7 @@ def main():
             "--single_camera", "1",
             "--quality", args.quality,
             "--dense", "0",
-            "--use_gpu", "1",
+            "--use_gpu", str(args.use_gpu),
         ], log)
         if rc != 0:
             print(f"ERROR: reconstruction failed (exit {rc}). See {logs / 'colmap.log'}")
