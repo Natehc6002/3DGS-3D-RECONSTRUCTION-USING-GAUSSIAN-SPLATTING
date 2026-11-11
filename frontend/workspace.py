@@ -75,6 +75,7 @@ class Workspace(QWidget):
         overview_layout.addWidget(self.welcome)
         metrics = QHBoxLayout()
         metrics.setSpacing(10)
+        self.metric_values: dict[str, QLabel] = {}
         for value, caption in (("—", "Images"), ("—", "Training jobs"), ("—", "Scenes")):
             metric = QFrame()
             metric.setObjectName("metricCard")
@@ -86,6 +87,7 @@ class Workspace(QWidget):
             metric_layout.addWidget(number)
             metric_layout.addWidget(name)
             metrics.addWidget(metric)
+            self.metric_values[caption] = number
         overview_layout.addLayout(metrics)
         center.addWidget(overview, 1)
 
@@ -206,6 +208,9 @@ class Workspace(QWidget):
         self.project_title.setText(path.name)
         self.project_path.setText(str(path))
         self.welcome.setText("Project folders are ready. Add images to input/images to begin.")
+
+    def set_scene_count(self, count: int) -> None:
+        self.metric_values["Scenes"].setText(str(count))
 
     def append_output(self, text: str) -> None:
         cursor = self.console.textCursor()

@@ -111,7 +111,7 @@ class MainWindow(QMainWindow):
         self.workspace.prepare_images_requested.connect(self._run_preprocessing)
         self.workspace.colmap_requested.connect(self._run_colmap)
         self.workspace.stop_requested.connect(self.processes.stop)
-        self.projects.project_opened.connect(self.workspace.set_project)
+        self.projects.project_opened.connect(self._on_project_opened)
         self.processes.output_received.connect(self._handle_process_output)
         self.processes.state_changed.connect(self.workspace.set_process_state)
         self.processes.finished.connect(self._handle_process_finished)
@@ -140,6 +140,15 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentWidget(self.workspace)
         self.workspace.append_output(f"Project opened: {project}\n")
 
+    def _on_project_opened(self, project: Path) -> None:
+        self.workspace.set_project(project)
+        self._refresh_scene_count()
+
+    def _refresh_scene_count(self) -> None:
+        manager = self.projects.scene_manager
+        count = len(manager.discover()) if manager is not None else 0
+        self.workspace.set_scene_count(count)
+
     def _import_scene(self) -> None:
         scene, _ = QFileDialog.getOpenFileName(self, "Import Gaussian scene", "", "PLY scenes (*.ply)")
         if not scene:
@@ -150,6 +159,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Could not import scene", str(exc))
             return
         self.workspace.append_output(f"Scene imported: {imported}\n")
+        self._refresh_scene_count()
         self.stack.setCurrentWidget(self.workspace)
 
     def _run_brush_training(self) -> None:
@@ -257,12 +267,15 @@ class MainWindow(QMainWindow):
                 self.workspace.append_output(message + "\n")
             return
         if succeeded:
-            scenes = self.projects.current_project / "scenes" / "original"
-            finals = sorted(scenes.glob("*.ply"), key=lambda path: path.stat().st_mtime) if scenes.exists() else []
+            manager = self.projects.scene_manager
+            finals = manager.discover("original") if manager is not None else []
             if finals:
-                final = finals[-1]
-                self.workspace.set_training_progress(self._training_steps, self._training_steps, f"Final scene: {final.name}")
-                self.workspace.append_output(f"Final scene: {final}\n")
+                final = manager.register_output(finals[0].path, "original")
+                self.workspace.set_training_progress(
+                    self._training_steps, self._training_steps, f"Final scene: {final.name}"
+                )
+                self.workspace.append_output(f"Final scene: {final.path}\n")
+                self._refresh_scene_count()
             else:
                 self.workspace.set_latest_update("Runner exited successfully but no final PLY was found.")
             return
@@ -296,15 +309,18 @@ class MainWindow(QMainWindow):
         if self.processes.is_running:
             QMessageBox.information(self, "Process running", "Close or stop the current process first.")
             return
-        scenes = project / "scenes" / "original"
-        if not scenes.is_dir() or not any(scenes.glob("*.ply")):
-            QMessageBox.information(self, "No scenes yet", f"No PLY scenes found in:\n{scenes}")
+        manager = self.projects.scene_manager
+        scenes = manager.discover() if manager is not None else []
+        if not scenes:
+            QMessageBox.information(self, "No scenes yet", f"No PLY scenes found in:\n{project / 'scenes'}")
             return
-        scene, _ = QFileDialog.getOpenFileName(
-            self, "Choose Gaussian scene", str(scenes), "PLY scenes (*.ply)"
+        options = [f"{record.category.title()} — {record.name} ({record.size_bytes / 1e6:.2f} MB)" for record in scenes]
+        selected, accepted = QInputDialog.getItem(
+            self, "Choose Gaussian scene", "Available scenes:", options, 0, False
         )
-        if not scene:
+        if not accepted:
             return
+        scene = str(next(record.path for record, option in zip(scenes, options) if option == selected))
         brush = self._brush_executable
         if not brush or not Path(brush).is_file():
             brush, _ = QFileDialog.getOpenFileName(

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
+
+from core.scene_manager import SceneError, SceneManager
 
 
 PROJECT_FOLDERS = (
@@ -29,6 +30,7 @@ class ProjectManager(QObject):
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self.current_project: Path | None = None
+        self.scene_manager: SceneManager | None = None
 
     def create_project(self, folder: str | Path, name: str) -> Path:
         root = Path(folder).expanduser().resolve()
@@ -72,19 +74,16 @@ class ProjectManager(QObject):
         if not isinstance(metadata, dict) or not metadata.get("name"):
             raise ProjectError("The project.json file is missing a project name.")
         self.current_project = project
+        self.scene_manager = SceneManager(project)
         self.project_opened.emit(project)
         return project
 
     def import_scene(self, source: str | Path) -> Path:
-        if self.current_project is None:
+        if self.current_project is None or self.scene_manager is None:
             raise ProjectError("Open or create a project before importing a scene.")
-        source_path = Path(source).expanduser().resolve()
-        if not source_path.is_file() or source_path.suffix.lower() != ".ply":
-            raise ProjectError("Choose an existing PLY scene file.")
-        destination = self.current_project / "scenes" / "original" / source_path.name
-        if destination.exists():
-            raise ProjectError(f"A scene with that name is already in this project: {destination.name}")
-        shutil.copy2(source_path, destination)
-        return destination
+        try:
+            return self.scene_manager.register_scene(source, "original").path
+        except SceneError as exc:
+            raise ProjectError(str(exc)) from exc
 
 
