@@ -1,0 +1,5 @@
+setting,max_voxel_fraction,importance_threshold,kept,removed,kept_pct,size_in_mb,size_out_mb,compression_ratio,time_s,voxels_emptied,max_voxel_loss_frac,p95_voxel_loss_frac,voxels_loss_ge_50pct,top1pct_voxel_share_of_removals,quality
+baseline_opacity_0.05,n/a,n/a,178344,79965,69.04,60.96,42.09,1.45,0.2,610,1.000,1.000,910,0.441,not measured (Brush visual check pending)
+smart_frac020,0.2,0.0001,207409,50900,80.29,60.96,48.95,1.25,1.0,0,0.200,0.200,0,0.561,not measured (Brush visual check pending)
+smart_default,0.3,0.0001,182489,75820,70.65,60.96,43.07,1.42,1.0,0,0.300,0.300,0,0.565,not measured (Brush visual check pending)
+smart_frac050,0.5,0.001,130286,128023,50.44,60.96,30.75,1.98,1.0,0,0.500,0.500,432,0.558,not measured (Brush visual check pending)
