@@ -1,0 +1,13 @@
+source_file,route,setting,gaussians,output_size_mb,ratio_vs_60_96mb,time_s,max_abs_err,mean_abs_err,note
+figure_30k_30000.ply,baseline,none,258309,60.96,1.000,,,,"reference Brush export (not a reduction); quality not measured"
+figure_30k_30000.ply,A_sh_truncate,degree 2,258309,39.26,1.553,18.696,1.08541,0.064909,f_rest 45->24; rest energy removed 53.91%; quality not measured (Brush verdict pending)
+figure_30k_30000.ply,A_sh_truncate,degree 1,258309,23.77,2.565,18.517,1.17419,0.0625064,f_rest 45->9; rest energy removed 84.73%; quality not measured (Brush verdict pending)
+figure_30k_30000.ply,A_sh_truncate,degree 0,258309,14.47,4.214,18.528,1.17419,0.0608011,f_rest 45->0; rest energy removed 100.00%; quality not measured (Brush verdict pending)
+figure_30k_30000.ply,B_quantize_npz,pos16 rot8 scale16 opacity16 dc16 rest8,258309,14.52,4.200,18.986,0.00547459,0.00136605,"archive for storage/transfer; Brush opens decoded PLY of same size (60.96 MB); quality not measured (Brush verdict pending)"
+figure_30k_30000.ply,C_gzip,gzip level 6,258309,57.07,1.068,2.906,0,0,lossless byte-identical; Brush cannot open .gz (gunzip restores original exactly)
+fig_30k_smart_default.ply,baseline,none,182489,43.07,1.415,,,,"smart-pruned default from prior step; quality not measured"
+fig_30k_smart_default.ply,A_sh_truncate,degree 2,182489,27.74,2.198,12.284,1.08541,0.0614385,f_rest 45->24; rest energy removed 53.75%; quality not measured (Brush verdict pending)
+fig_30k_smart_default.ply,A_sh_truncate,degree 1,182489,16.79,3.631,12.186,1.13566,0.0591706,f_rest 45->9; rest energy removed 84.58%; quality not measured (Brush verdict pending)
+fig_30k_smart_default.ply,A_sh_truncate,degree 0,182489,10.22,5.965,12.212,1.13566,0.057613,f_rest 45->0; rest energy removed 100.00%; quality not measured (Brush verdict pending)
+fig_30k_smart_default.ply,B_quantize_npz,pos16 rot8 scale16 opacity16 dc16 rest8,182489,10.26,5.942,13.528,0.00547459,0.00130238,"archive for storage/transfer; Brush opens decoded PLY of same size (43.07 MB); quality not measured (Brush verdict pending)"
+fig_30k_smart_default.ply,C_gzip,gzip level 6,182489,40.31,1.512,2.031,0,0,lossless byte-identical; Brush cannot open .gz (gunzip restores original exactly)
