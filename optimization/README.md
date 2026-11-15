@@ -1,0 +1,351 @@
+# Gaussian optimization (size reduction for Brush scenes)
+
+Tools for inspecting, pruning and shrinking Gaussian splat PLY files
+exported by Brush, plus an end-to-end pipeline the desktop app can call.
+Everything here reads a PLY and writes *new* files; the input is never
+modified and existing outputs are never overwritten.
+
+| Module | Purpose |
+|---|---|
+| `inspect_ply.py` | header/property/statistics report for one PLY |
+| `pruning/prune.py` | baseline opacity-threshold prune |
+| `pruning/smart_prune.py` | spatially safe prune (voxel budget, floater flags) |
+| `pruning/removal_map.py` | per-voxel histogram of what a prune removed |
+| `pruning/coverage_check.py` | occupancy loss proxy, original vs pruned |
+| `quantize/sh_truncate.py` | Route A: SH degree truncation |
+| `quantize/quantize.py`, `dequantize.py`, `core.py` | Route B: uint8/uint16 `.npz` archive + decode |
+| `quantize/gzip_ply.py` | Route C: gzip baseline |
+| `pipeline.py` | `run_pipeline()` + CLI: inspect -> smart prune -> SH -> Route B -> report |
+| `evaluate.py` | comparison table (CSV + markdown) from real files |
+| `results/` | small CSV/JSON results committed with the repo |
+
+Tests: `optimization/test_smart_prune.py`, `optimization/test_quantize.py`,
+`optimization/test_pipeline.py`, `optimization/test_evaluate.py`.
+
+## PLY attribute reference (Brush exports)
+
+Verified from real Brush v0.3.0 exports and the Brush source (see the
+module docstrings for the exact files). A degree-3 scene has **59
+float32 properties per Gaussian, no normals**:
+
+| Properties | Count | Stored encoding | Meaning |
+|---|---|---|---|
+| `x y z` | 3 | float32, scene units | centre position (COLMAP/scene units, `Vertical axis: y`) |
+| `f_dc_0..2` | 3 | float32 SH coefficient | view-independent colour (SH degree 0) |
+| `f_rest_0..44` | 45 | float32 SH coefficients | view-dependent colour bands 1-3 (76% of the bytes) |
+| `opacity` | 1 | float32 **logit** | apply sigmoid to get opacity in [0, 1] |
+| `rot_0..3` | 4 | float32, unit quaternion | Gaussian orientation (renormalize after any edit) |
+| `scale_0..2` | 3 | float32, **natural log** | apply `exp` to get ellipsoid semi-axis lengths in scene units |
+
+Header comments written by Brush: `Exported from Brush`,
+`Vertical axis: y`, `SH degree: 3`.
+
+Rules that matter when reading these files:
+
+- **Access every property by name, never by column position.** Brush
+  lists `f_rest_*` in text order in the header (`f_rest_0, f_rest_1,
+  f_rest_10, ...`), so positional indexing silently reads the wrong
+  coefficients.
+- `f_rest` count gives the SH degree: 0/9/24/45 properties -> degree
+  0/1/2/3.
+- Inside the file the coefficients are **channel-major**: 3 blocks of
+  (degree+1)^2-1 coefficients (`[red block][green block][blue block]`),
+  standard SH order inside each block. Verified from
+  `crates/brush-serde/src/export.rs` and `import.rs`
+  (`rest_coeffs = [red_rest, green_rest, blue_rest].concat()`), and
+  confirmed on the figurine data (block score 0.064 vs interleaved
+  0.238, cross-channel correlation 0.873 vs 0.023).
+- Truncating to a lower degree must keep, per channel, the *first* N
+  coefficients and relabel them into contiguous blocks of the new size.
+  `sh_truncate.py` checks the block structure on the real data and
+  refuses to write if it does not match.
+
+## Methods
+
+### 1. Inspect
+
+```powershell
+python -m optimization.inspect_ply --ply <file.ply> [--json report.json]
+```
+
+Counts, property list, SH degree, per-attribute stats, sigmoid opacity
+histogram, `exp(scale)` sizes, quaternion norms. Read-only.
+
+### 2. Baseline prune (`pruning/prune.py`)
+
+Removes everything with `sigmoid(opacity) < 0.05` (optionally extreme
+sizes). Cheap, but removals concentrate wherever low opacity does -
+on the figurine it emptied **610 voxels** and lost >=50% of the
+Gaussians in 910 voxels (holes).
+
+### 3. Smart prune (`pruning/smart_prune.py`)
+
+1. Importance = `sigmoid(opacity) * ellipsoid volume`.
+2. Flags floaters: isolated (k-NN), extreme size, outside a robust
+   bounding box, low importance.
+3. Spends a **per-voxel removal budget**: a voxel loses at most
+   `max_voxel_fraction` of its Gaussians and is **never emptied**
+   (unless you explicitly enable `--remove-singleton-floaters`).
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `max_voxel_fraction` | `0.3` | max share of any voxel that may be removed |
+| `voxel_size` | `5.0` | voxel edge in scene units |
+| `importance_threshold` | `1e-4` | flag `sigmoid(opacity)*volume` below this (0 = off) |
+| `knn_k` | `5` | k for the isolation test |
+| `iso_percentile` | `99` | flag k-NN distances above this percentile |
+| `size_percentile` | `99.9` | flag `exp(scale)` above this percentile |
+| `body_percentile_low/high` | `0.5 / 99.5` | robust body box percentiles |
+| `body_margin` | `20.0` | margin added around the body box |
+| `--remove-singleton-floaters` | off | documented exception: may empty a voxel holding one floater |
+
+### 4. Coverage check (`pruning/coverage_check.py`)
+
+Geometric proxy only: voxel occupancy loss between original and pruned.
+It reports where Gaussians disappeared (emptied voxels, >=50% loss
+voxels, max loss) so holes can be spotted before opening Brush. **It
+does not measure image quality.**
+
+### 5. Route A: SH degree truncation (`quantize/sh_truncate.py`)
+
+Drops `f_rest` coefficients (45 -> 24/9/0 for degree 2/1/0), updates the
+`SH degree:` header comment, keeps property order otherwise. Biggest
+Brush-readable saving because `f_rest` is 76% of the bytes.
+
+```powershell
+python -m optimization.quantize.sh_truncate --input in.ply --output out.ply --degree 2
+python -m optimization.quantize.sh_truncate --input in.ply --evidence-only
+```
+
+### 6. Route B: quantized archive (`quantize/quantize.py` + `dequantize.py`)
+
+Quantizes every attribute to uint8/uint16 with stored per-attribute
+min/max (default bits: pos 16, rot 8, scale 16, opacity 16, dc 16,
+rest 8) into a compressed `.npz`, then decodes back to a float32 PLY.
+Encode validates the round trip (all errors within the quantization
+step; quaternions renormalized).
+
+**The `.npz` is storage/transfer only - Brush cannot open it.** The
+decoded `q_back` PLY is a normal Brush-readable file with the same size
+as its source PLY; the compression lives in the archive, not in the PLY
+Brush opens.
+
+### 7. Route C: gzip (`quantize/gzip_ply.py`)
+
+Lossless baseline (byte-identical after `gunzip`). Brush cannot open
+`.gz` either; barely shrinks the figurine (60.96 -> 57.07 MB).
+
+### 8. Pipeline (`pipeline.py`)
+
+```powershell
+python -m optimization.pipeline --input <scene.ply> --output-dir <dir> `
+    [--sh-degree {0,1,2,3}] [--route-b] [--no-prune] [--no-coverage] [--quiet]
+```
+
+Stages: `inspect -> smart_prune -> sh_truncate (optional) -> route_b
+(optional) -> report`. Exit codes: **0** ok, **2** bad arguments/paths or
+output already exists, **3** stage failure (error is written into the
+report; partial outputs of that run are removed).
+
+Defaults are deliberately conservative because the Brush visual verdicts
+are still *not tested*: smart pruning **on** (spatial safety is verified
+by the voxel invariant), SH truncation **off**, Route B **off**.
+
+### 9. Evaluation (`evaluate.py`)
+
+Builds `results/evaluation_table.csv` + `results/evaluation_summary.md`
+from real files. Columns that cannot be measured here are explicit:
+`processing_time_s` = `not measured` unless you pass `--time`,
+`psnr/ssim/fps` = always `not measured`, `brush_load_status` = the manual
+verdicts in `BRUSH_LOAD_STATUS` (anything unverified stays
+`not tested`).
+
+```powershell
+python -m optimization.evaluate --original orig.ply `
+    --variant smart_default=smart.ply --time smart_default=1.1 `
+    --round-trip route_b_decoded=smart.ply,smart_qback.ply
+```
+
+## Results (figurine, one scene)
+
+Scene `projects/figure_01/scenes/original/figure_30k_30000.ply`:
+**258,309 Gaussians, 60.96 MB**, 59 float32 properties, SH degree 3.
+All numbers below were produced by the commands in this folder; quality
+metrics were **not** measured.
+
+### Pruning (`results/smart_prune_figurine.csv`)
+
+| setting | kept | output | ratio | voxels emptied | max voxel loss | voxels >=50% loss |
+|---|---|---|---|---|---|---|
+| baseline opacity 0.05 | 178,344 (69.04%) | 42.09 MB | 1.45x | 610 | 1.000 | 910 |
+| smart frac 0.2 | 207,409 (80.29%) | 48.95 MB | 1.25x | 0 | 0.200 | 0 |
+| **smart default frac 0.3** | 182,489 (70.65%) | 43.07 MB | 1.42x | 0 | 0.300 | 0 |
+| smart frac 0.5 | 130,286 (50.44%) | 30.75 MB | 1.98x | 0 | 0.500 | 432 |
+
+The baseline empties voxels (visible holes risk); the smart settings
+never empty one, but at frac 0.5 they still lose >=50% in 432 voxels.
+
+### Size reduction routes (`results/size_reduction_figurine.csv`)
+
+| source | route | setting | output | ratio vs 60.96 MB |
+|---|---|---|---|---|
+| original | baseline | - | 60.96 MB | 1.00x |
+| original | A SH | degree 2 | 39.26 MB | 1.55x |
+| original | A SH | degree 1 | 23.77 MB | 2.57x |
+| original | A SH | degree 0 | 14.47 MB | 4.21x |
+| original | B npz | pos16/rot8/scale16/op16/dc16/rest8 | 14.52 MB | 4.20x |
+| original | C gzip | level 6 | 57.07 MB | 1.07x |
+| smart default | A SH | degree 2 | 27.74 MB | 2.20x |
+| smart default | A SH | degree 1 | 16.79 MB | 3.63x |
+| smart default | A SH | degree 0 | 10.22 MB | 5.97x |
+| smart default | B npz | default bits | 10.26 MB | 5.94x |
+| smart default | C gzip | level 6 | 40.31 MB | 1.51x |
+
+Route B `.npz` sizes are storage sizes; Brush only ever opens the decoded
+PLY (same size as the source: 60.96 MB / 43.07 MB).
+
+### Evaluation table (`results/evaluation_table.csv`)
+
+Measured this session with each tool's own timer:
+
+| variant | gaussians | size | ratio | time (s) | coverage proxy | Route B round-trip |
+|---|---|---|---|---|---|---|
+| original | 258,309 | 60.96 MB | 1.000x | n/a | n/a (no removals) | n/a |
+| baseline_prune | 178,344 | 42.09 MB | 1.448x | 0.3 | emptied 610; >=50% 910; max 1.000 | n/a |
+| smart_default | 182,489 | 43.07 MB | 1.415x | 1.1 | emptied 0; >=50% 0; max 0.300 | n/a |
+| smart_shd2 | 182,489 | 27.74 MB | 2.198x | 13.1 | n/a (layout differs) | n/a |
+| smart_shd1 | 182,489 | 16.79 MB | 3.631x | 12.7 | n/a (layout differs) | n/a |
+| smart_shd0 | 182,489 | 10.22 MB | 5.965x | 12.8 | n/a (layout differs) | n/a |
+| route_b_decoded | 182,489 | 43.07 MB | 1.415x | 13.7 | n/a (not an exact subset) | 0.00547457 |
+
+`smart_shd*` are smart-pruned scenes, so their coverage versus the
+*original* cannot be diffed row by row (different property layout); the
+prune itself is the smart_default row above. PSNR/SSIM/FPS: **not
+measured** for every row.
+
+### Pipeline smoke run (same scene)
+
+```text
+inspect 0.395 s | smart_prune 1.811 s | sh_truncate(2) 13.184 s |
+route_b 9.372 s | total 24.766 s
+258,309 -> 182,489 Gaussians; 60.96 -> 43.07 MB (1.4155x) ->
+27.74 MB with SH degree 2 (2.1977x); npz 7.41 MB (8.2287x vs original);
+coverage: 0 emptied, 0 over 50% loss; round trip within quantization step
+```
+
+Report: `<output-dir>/<stem>_pipeline.json`, CSV log:
+`<output-dir>/pipeline_runs.csv` (in `results/` for a project folder).
+
+### Brush verdicts
+
+Every optimized file still shows **not tested** - nobody has opened them
+in Brush yet:
+
+| file | Brush verdict |
+|---|---|
+| smart default (`*_smart.ply`) | not tested |
+| shd2 / shd1 / shd0 | not tested |
+| Route B decoded (`*_qback.ply`) | not tested |
+
+Fill `BRUSH_LOAD_STATUS` in `evaluate.py` (and this table) only after a
+visual check. Until then the recommended defaults stay as they are.
+
+## Limits
+
+- **No quality metrics.** PSNR, SSIM and FPS are not computed anywhere in
+  this repository; they read `not measured` in every table. The coverage
+  columns are geometric proxies only.
+- **Brush verdicts pending.** All optimized variants are `not tested`;
+  size and spatial safety are measured, visual quality is not.
+- **Route B shrinks storage, not the in-Brush PLY.** Brush cannot read
+  `.npz`; the decoded PLY is the same size as its source.
+- **Route C `.gz` is not Brush-readable** either (gunzip restores the
+  original exactly).
+- **SH truncation loses view-dependent colour** (increasingly at degree
+  1 and 0); it only keeps the view-independent term at degree 0.
+- **One scene tested.** All numbers come from the single figurine scene
+  (258,309 Gaussians). Other scenes/scan types are untested.
+- **Coverage/round-trip are not rendering tests** - they bound geometry
+  loss and quantization error, nothing about what the images look like.
+- Pipeline runs never overwrite: to rerun, use a fresh `--output-dir` or
+  delete the previous report/outputs first.
+
+## Calling the pipeline from the desktop app
+
+```python
+from optimization.pipeline import run_pipeline
+
+result = run_pipeline(
+    project / "scenes" / "original" / "scene_30k_30000.ply",
+    project,            # folder containing project.json
+    sh_degree=None,     # 0/1/2 once the Brush verdicts are filled in
+    route_b=False,
+    quiet=True,         # suppress per-stage stdout
+)
+if result["status"] == "ok":
+    viewer.open(result["outputs"]["final_ply"])      # scenes/optimized/...
+else:
+    show_error(result["error"], stage=result["error_stage"])
+```
+
+If `output_dir` contains `project.json` the run follows the team folder
+contract (`core/project_manager.py`): PLYs go to
+`<project>/scenes/optimized/`, the report and `pipeline_runs.csv` go to
+`<project>/results/`. Any other folder receives all files directly.
+
+`result` is a plain JSON-serializable dict, identical to the report file
+(`schema_version: 1`). Key fields:
+
+| Field | Content |
+|---|---|
+| `status`, `error`, `error_kind`, `error_stage`, `exit_code` | `ok`/`error`; `bad_input`/`exists`/`stage`; 0/2/3 |
+| `stages[]` | `{name, status: ok\|skipped\|error, time_s, error, reason?}` |
+| `counts` | `input`, `pruned`, `output` |
+| `sizes`, `ratios` | bytes in/out; `pruned_vs_input`, `final_vs_input`, `npz_vs_input` |
+| `timings` | `total_s` plus one key per stage |
+| `outputs` | `pruned_ply`, `sh_ply`, `final_ply`, `npz`, `q_back_ply`, `report_json`, `csv_log` |
+| `inspect`, `smart_prune`, `coverage`, `sh_truncate`, `route_b` | full per-stage reports (or `null`) |
+| `warnings` | e.g. skipped stages, Route B storage-only notice |
+
+Error contract: missing file / bad option / existing output -> dict with
+`error_kind` `bad_input` or `exists`, **nothing written**, no report.
+A stage failure (unreadable/empty PLY, layout refusal, ...)` ->
+`error_kind: stage`, partial outputs removed, error written into the
+report JSON.
+
+## Commands (run from the repo root)
+
+```powershell
+# inspect
+python -m optimization.inspect_ply --ply <file.ply>
+
+# pruning
+python -m optimization.pruning.prune --input <in.ply> --output <out.ply>
+python -m optimization.pruning.smart_prune --input <in.ply> --output <out.ply> --json <r.json>
+python -m optimization.pruning.coverage_check --input <orig.ply> --pruned <pruned.ply>
+python -m optimization.pruning.removal_map --input <orig.ply> --pruned <pruned.ply>
+
+# quantization routes
+python -m optimization.quantize.sh_truncate --input <in.ply> --output <out.ply> --degree 2
+python -m optimization.quantize.quantize --input <in.ply> --output <out.npz>
+python -m optimization.quantize.dequantize --input <out.npz> --output <back.ply>
+python -m optimization.quantize.gzip_ply --input <in.ply> --output <out.ply.gz>
+
+# pipeline + evaluation
+python -m optimization.pipeline --input <in.ply> --output-dir <dir> --sh-degree 2 --route-b
+python -m optimization.evaluate --original <orig.ply> --variant smart_default=<smart.ply>
+
+# tests
+python -m pytest optimization -q
+# or: python -m unittest discover -s optimization -p "test_*.py" -t .
+```
+
+Open a result in Brush:
+
+```powershell
+$env:WGPU_BACKEND="vulkan"; $env:WGPU_POWER_PREF="high"
+C:\Tools\Brush\brush_app.exe --with-viewer <ply path>
+```
+
+Check when viewing: colour shift (view-dependent effects), flat shading,
+holes, floaters, load errors.
