@@ -62,9 +62,11 @@ CSV_COLUMNS = (
     "error", "report",
 )
 
-# Defaults follow the current evidence: smart pruning is on (spatial safety
-# verified: no voxel is emptied), SH truncation and Route B are off because
-# the Brush visual verdicts are still "not tested".
+# Defaults follow the Brush verdicts only: smart pruning is on (spatial
+# safety verified: no voxel is emptied); SH truncation is off because
+# only smart_shd2 has a load result ("opens in Brush 0.3.0, visual
+# comparison against original pending") and shd1/shd0 are "not tested";
+# Route B is off because its decoded PLY is "not tested" in Brush.
 DEFAULTS = {
     "max_voxel_fraction": 0.3,
     "voxel_size": 5.0,

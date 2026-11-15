@@ -15,6 +15,8 @@ import numpy as np
 from plyfile import PlyData, PlyElement
 
 from optimization.pipeline import run_pipeline
+from optimization.quantize import core as route_b_core
+from optimization.quantize import sh_truncate
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BRUSH_COMMENTS = ["Exported from Brush", "Vertical axis: y"]
@@ -249,6 +251,25 @@ class TestPipelineRun(PipelineTestCase):
         self.assertIn("no Gaussians", res["error"])
         self.assertTrue((self.dir / "empty_pipeline.json").is_file())
 
+    def test_extra_properties_are_preserved(self):
+        # a PLY with unknown extras (nx/ny/nz) must prune fine and keep them
+        base = make_vertex_array(300, seed=6, sh_degree=0)
+        dt = np.dtype([(n, base.dtype[n]) for n in base.dtype.names[:6]]
+                      + [("nx", "<f4"), ("ny", "<f4"), ("nz", "<f4")]
+                      + [(n, base.dtype[n]) for n in base.dtype.names[6:]])
+        v = np.empty(len(base), dtype=dt)
+        for n in base.dtype.names:
+            v[n] = base[n]
+        for n in ("nx", "ny", "nz"):
+            v[n] = np.float32(0.0)
+        src2 = write_ply(self.dir / "extras.ply", v, sh_degree=0)
+        res = run_pipeline(src2, self.dir, quiet=True)
+        self.assertEqual(res["status"], "ok", res.get("error"))
+        out = PlyData.read(str(self.dir / "extras_smart.ply"))["vertex"].data
+        self.assertIn("nx", out.dtype.names)
+        self.assertIn("nz", out.dtype.names)
+        self.assertEqual(len(out), res["counts"]["output"])
+
     def test_sh_degree_equal_to_input_is_skipped(self):
         res = run_pipeline(self.src, self.dir, sh_degree=3, quiet=True)
         self.assertEqual(res["status"], "ok", res.get("error"))
@@ -329,6 +350,57 @@ class TestPipelineRun(PipelineTestCase):
         self.assertEqual(self.src.read_bytes(), self.original_bytes)
 
 
+class TestRouteBPresetPinning(PipelineTestCase):
+    """Pin the Route B preset behind every published .npz number.
+
+    The 10.26 MB (evaluation run) vs 7.41 MB (pipeline smoke run) sizes
+    came from the same preset on DIFFERENT inputs: the evaluation run
+    encoded the smart-pruned SH-degree-3 PLY (45 f_rest), the pipeline
+    smoke run encoded the post-truncation SH-degree-2 PLY (24 f_rest)
+    because pipeline Route B encodes final_ply. Same code, same bits,
+    different input SH degree.
+    """
+
+    def test_pipeline_uses_core_default_opts(self):
+        v = make_vertex_array(300, seed=12, sh_degree=3)
+        src = write_ply(self.dir / "scene.ply", v, sh_degree=3)
+        res = run_pipeline(src, self.dir, prune=False, route_b=True,
+                           quiet=True)
+        self.assertEqual(res["status"], "ok", res.get("error"))
+        self.assertEqual(res["route_b"]["settings_bits"],
+                         dict(route_b_core.DEFAULT_OPTS))
+
+    def test_same_input_same_bytes_as_direct_encode(self):
+        # pipeline route_b and core.encode_ply must agree byte for byte
+        # on the same input with the default preset
+        v = make_vertex_array(300, seed=13, sh_degree=3)
+        src = write_ply(self.dir / "scene.ply", v, sh_degree=3)
+        direct = self.dir / "direct.npz"
+        route_b_core.encode_ply(src, direct)
+        res = run_pipeline(src, self.dir, prune=False, route_b=True,
+                           quiet=True)
+        self.assertEqual(res["status"], "ok", res.get("error"))
+        pipe_npz = Path(res["outputs"]["npz"])
+        self.assertEqual(direct.stat().st_size, pipe_npz.stat().st_size)
+        self.assertEqual(direct.read_bytes(), pipe_npz.read_bytes())
+
+    def test_npz_size_depends_on_input_sh_degree(self):
+        # same Gaussians, same preset: degree-3 input archives larger
+        # than its degree-2 truncation (the 10.26 vs 7.41 MB cause)
+        v = make_vertex_array(600, seed=14, sh_degree=3)
+        src3 = write_ply(self.dir / "d3.ply", v, sh_degree=3)
+        src2 = self.dir / "d2.ply"
+        sh_truncate.truncate(src3, src2, 2)
+        npz3 = self.dir / "d3.npz"
+        npz2 = self.dir / "d2.npz"
+        route_b_core.encode_ply(src3, npz3)
+        route_b_core.encode_ply(src2, npz2)
+        self.assertGreater(npz3.stat().st_size, npz2.stat().st_size)
+        # f_rest dominates: 45 vs 24 float32 columns per Gaussian
+        rest3 = sum(1 for n in v.dtype.names if n.startswith("f_rest_"))
+        self.assertEqual(rest3, 45)
+
+
 class TestPipelineCLI(PipelineTestCase):
     def _run(self, *args):
         return subprocess.run(
@@ -340,6 +412,7 @@ class TestPipelineCLI(PipelineTestCase):
                       "--output-dir", str(self.dir))
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertIn("input not found", r.stderr + r.stdout)
+        self.assertNotIn("Traceback", r.stderr)
 
     def test_cli_exit_3_bad_ply(self):
         bad = self.dir / "bad.ply"
@@ -348,6 +421,28 @@ class TestPipelineCLI(PipelineTestCase):
                       "--quiet")
         self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
         self.assertTrue((self.dir / "bad_pipeline.json").is_file())
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_cli_non_ply_extension_clean_error(self):
+        txt = self.dir / "note.txt"
+        txt.write_text("hello", encoding="utf-8")
+        r = self._run("--input", str(txt), "--output-dir", str(self.dir),
+                      "--quiet")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertIn("ERROR", r.stdout + r.stderr)
+
+    def test_cli_existing_outputs_exit_2_no_traceback(self):
+        src = write_ply(self.dir / "scene.ply",
+                        make_vertex_array(200, seed=7), sh_degree=0)
+        r1 = self._run("--input", str(src), "--output-dir", str(self.dir),
+                       "--quiet")
+        self.assertEqual(r1.returncode, 0, r1.stdout + r1.stderr)
+        r2 = self._run("--input", str(src), "--output-dir", str(self.dir),
+                       "--quiet")
+        self.assertEqual(r2.returncode, 2, r2.stdout + r2.stderr)
+        self.assertIn("refusing to overwrite", r2.stdout + r2.stderr)
+        self.assertNotIn("Traceback", r2.stderr)
 
     def test_cli_exit_0_full_run(self):
         src = write_ply(self.dir / "scene.ply",

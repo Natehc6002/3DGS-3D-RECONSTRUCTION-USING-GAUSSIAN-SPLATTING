@@ -147,9 +147,12 @@ Stages: `inspect -> smart_prune -> sh_truncate (optional) -> route_b
 output already exists, **3** stage failure (error is written into the
 report; partial outputs of that run are removed).
 
-Defaults are deliberately conservative because the Brush visual verdicts
-are still *not tested*: smart pruning **on** (spatial safety is verified
-by the voxel invariant), SH truncation **off**, Route B **off**.
+Defaults are chosen only from Brush verdicts: smart pruning **on**
+(spatial safety verified by the voxel invariant: 0 emptied vs baseline
+610), SH truncation **off** (only smart_shd2 has a load result -
+"opens in Brush 0.3.0, visual comparison against original pending" -
+and shd1/shd0 are "not tested"), Route B **off** (decoded PLY "not
+tested").
 
 ### 9. Evaluation (`evaluate.py`)
 
@@ -193,16 +196,20 @@ never empty one, but at frac 0.5 they still lose >=50% in 432 voxels.
 | original | A SH | degree 2 | 39.26 MB | 1.55x |
 | original | A SH | degree 1 | 23.77 MB | 2.57x |
 | original | A SH | degree 0 | 14.47 MB | 4.21x |
-| original | B npz | pos16/rot8/scale16/op16/dc16/rest8 | 14.52 MB | 4.20x |
+| original | B npz | pos16/rot8/scale16/op16/dc16/rest8, input SH degree 3 | 14.52 MB | 4.20x |
 | original | C gzip | level 6 | 57.07 MB | 1.07x |
 | smart default | A SH | degree 2 | 27.74 MB | 2.20x |
 | smart default | A SH | degree 1 | 16.79 MB | 3.63x |
 | smart default | A SH | degree 0 | 10.22 MB | 5.97x |
-| smart default | B npz | default bits | 10.26 MB | 5.94x |
+| smart default | B npz | pos16/rot8/scale16/op16/dc16/rest8, input SH degree 3 | 10.26 MB | 5.94x |
 | smart default | C gzip | level 6 | 40.31 MB | 1.51x |
 
 Route B `.npz` sizes are storage sizes; Brush only ever opens the decoded
-PLY (same size as the source: 60.96 MB / 43.07 MB).
+PLY (same size as the source: 60.96 MB / 43.07 MB). **Every `.npz`
+number in this repository uses the same bit preset** (`pos 16, rot 8,
+scale 16, opacity 16, dc 16, rest 8` = `quantize/core.py` `DEFAULT_OPTS`,
+`np.savez_compressed`); archive size then depends only on the **input
+file's SH degree** (see "npz size discrepancy" below).
 
 ### Evaluation table (`results/evaluation_table.csv`)
 
@@ -223,13 +230,35 @@ Measured this session with each tool's own timer:
 prune itself is the smart_default row above. PSNR/SSIM/FPS: **not
 measured** for every row.
 
+### Why the same scene shows two `.npz` sizes (10.26 vs 7.41 MB)
+
+Both numbers use the **same code path and the same preset** (`pos16
+rot8 scale16 opacity16 dc16 rest8`, `np.savez_compressed`); the only
+difference is the **input file**:
+
+| number | run | input to Route B | input SH | input size |
+|---|---|---|---|---|
+| 10.26 MB | `size_reduction_figurine.csv` (quantize CLI) | `fig_30k_smart_default.ply` | degree 3 (45 `f_rest`) | 43.07 MB |
+| 7.41 MB | pipeline smoke run (`--sh-degree 2 --route-b`) | `fig_30k_smart_shd2.ply` (`final_ply`, after truncation) | degree 2 (24 `f_rest`) | 27.74 MB |
+
+Verified on this machine with identical settings: encoding the same
+degree-3 smart PLY through the quantize CLI and through
+`run_pipeline(..., route_b=True)` produces **byte-identical** archives
+(10,259,142 bytes each); encoding its degree-2 truncation produces
+7,408,556 bytes. Pipeline Route B always encodes `final_ply` (after any
+`--sh-degree` truncation), which is why the smoke-run archive is smaller.
+Pinned by `test_pipeline.py::TestRouteBPresetPinning`.
+
 ### Pipeline smoke run (same scene)
 
 ```text
 inspect 0.395 s | smart_prune 1.811 s | sh_truncate(2) 13.184 s |
 route_b 9.372 s | total 24.766 s
 258,309 -> 182,489 Gaussians; 60.96 -> 43.07 MB (1.4155x) ->
-27.74 MB with SH degree 2 (2.1977x); npz 7.41 MB (8.2287x vs original);
+27.74 MB with SH degree 2 (2.1977x);
+npz 7.41 MB (8.2287x vs original), preset pos16/rot8/scale16/op16/dc16/rest8,
+input = the SH-degree-2 final PLY (not the degree-3 smart PLY - see the
+"npz size discrepancy" section);
 coverage: 0 emptied, 0 over 50% loss; round trip within quantization step
 ```
 
@@ -238,25 +267,47 @@ Report: `<output-dir>/<stem>_pipeline.json`, CSV log:
 
 ### Brush verdicts
 
-Every optimized file still shows **not tested** - nobody has opened them
-in Brush yet:
+Only **one** optimized file has been opened in Brush 0.3.0 so far
+(everything else stays `not tested` - no verdict is guessed):
 
 | file | Brush verdict |
 |---|---|
 | smart default (`*_smart.ply`) | not tested |
-| shd2 / shd1 / shd0 | not tested |
+| **shd2 (`fig_30k_smart_shd2.ply`, 182,489 splats, 27.74 MB)** | **opens ok** - Brush reported SH degree 2 and 182,489 splats, no load error. Front/side views clean; blur and streaks appear when the camera leaves the training path (expected novel-view behaviour, **not** compared against the original under the same path, so not attributable to pruning or SH truncation). No holes noticed in the viewed frames. Colour shift / flat shading versus the original: not judged. |
+| shd1 / shd0 | not tested |
 | Route B decoded (`*_qback.ply`) | not tested |
+| pipeline combo shd2 output | not tested |
+
+Test environment limit: the Brush run above used the **Intel
+integrated GPU** (Stats panel: "Intel(R) RaptorLake-S Mobile Graphics
+Controller", Type `IntegratedGpu`, driver 101.7026), not the NVIDIA RTX
+4060, with `WGPU_BACKEND=vulkan` (the DirectX 12 backend crashes on a
+shader compile error, FXC X3695). See `tools/README_brush_gpu.md`.
 
 Fill `BRUSH_LOAD_STATUS` in `evaluate.py` (and this table) only after a
-visual check. Until then the recommended defaults stay as they are.
+visual check.
+
+### Recommended pipeline defaults (chosen only from verdicts)
+
+| default | setting | reason (one sentence) |
+|---|---|---|
+| smart prune | **on** | spatial safety is verified independently (0 voxels emptied vs baseline's 610) and no prune output has ever failed to load - but note no pruned-only file has a Brush verdict, so "not tested" applies to its visuals. |
+| SH truncation | **off** | only `smart_shd2` has a load result ("opens in Brush 0.3.0, visual comparison against original pending"), which is not enough to make degree 2 a default, and shd1/shd0 are "not tested". |
+| Route B | **off** | the decoded PLY is "not tested" in Brush and the archive is storage-only, so there is no verdict to justify enabling it. |
 
 ## Limits
 
 - **No quality metrics.** PSNR, SSIM and FPS are not computed anywhere in
   this repository; they read `not measured` in every table. The coverage
   columns are geometric proxies only.
-- **Brush verdicts pending.** All optimized variants are `not tested`;
-  size and spatial safety are measured, visual quality is not.
+- **Brush verdicts: one file only.** `fig_30k_smart_shd2.ply` opens in
+  Brush 0.3.0 (no load error); visual comparison against the original is
+  pending. All other optimized variants are `not tested`; size and
+  spatial safety are measured, visual quality is not.
+- **Test environment limit.** The only Brush run so far used the Intel
+  integrated GPU (`IntegratedGpu`), not the NVIDIA RTX 4060, with the
+  Vulkan backend (DirectX 12 crashes on shader compile error FXC X3695).
+  Any verdict here carries that limit; see `tools/README_brush_gpu.md`.
 - **Route B shrinks storage, not the in-Brush PLY.** Brush cannot read
   `.npz`; the decoded PLY is the same size as its source.
 - **Route C `.gz` is not Brush-readable** either (gunzip restores the
