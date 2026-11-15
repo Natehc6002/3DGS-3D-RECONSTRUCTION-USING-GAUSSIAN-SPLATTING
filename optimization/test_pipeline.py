@@ -251,6 +251,25 @@ class TestPipelineRun(PipelineTestCase):
         self.assertIn("no Gaussians", res["error"])
         self.assertTrue((self.dir / "empty_pipeline.json").is_file())
 
+    def test_extra_properties_are_preserved(self):
+        # a PLY with unknown extras (nx/ny/nz) must prune fine and keep them
+        base = make_vertex_array(300, seed=6, sh_degree=0)
+        dt = np.dtype([(n, base.dtype[n]) for n in base.dtype.names[:6]]
+                      + [("nx", "<f4"), ("ny", "<f4"), ("nz", "<f4")]
+                      + [(n, base.dtype[n]) for n in base.dtype.names[6:]])
+        v = np.empty(len(base), dtype=dt)
+        for n in base.dtype.names:
+            v[n] = base[n]
+        for n in ("nx", "ny", "nz"):
+            v[n] = np.float32(0.0)
+        src2 = write_ply(self.dir / "extras.ply", v, sh_degree=0)
+        res = run_pipeline(src2, self.dir, quiet=True)
+        self.assertEqual(res["status"], "ok", res.get("error"))
+        out = PlyData.read(str(self.dir / "extras_smart.ply"))["vertex"].data
+        self.assertIn("nx", out.dtype.names)
+        self.assertIn("nz", out.dtype.names)
+        self.assertEqual(len(out), res["counts"]["output"])
+
     def test_sh_degree_equal_to_input_is_skipped(self):
         res = run_pipeline(self.src, self.dir, sh_degree=3, quiet=True)
         self.assertEqual(res["status"], "ok", res.get("error"))
@@ -393,6 +412,7 @@ class TestPipelineCLI(PipelineTestCase):
                       "--output-dir", str(self.dir))
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertIn("input not found", r.stderr + r.stdout)
+        self.assertNotIn("Traceback", r.stderr)
 
     def test_cli_exit_3_bad_ply(self):
         bad = self.dir / "bad.ply"
@@ -401,6 +421,28 @@ class TestPipelineCLI(PipelineTestCase):
                       "--quiet")
         self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
         self.assertTrue((self.dir / "bad_pipeline.json").is_file())
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_cli_non_ply_extension_clean_error(self):
+        txt = self.dir / "note.txt"
+        txt.write_text("hello", encoding="utf-8")
+        r = self._run("--input", str(txt), "--output-dir", str(self.dir),
+                      "--quiet")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertIn("ERROR", r.stdout + r.stderr)
+
+    def test_cli_existing_outputs_exit_2_no_traceback(self):
+        src = write_ply(self.dir / "scene.ply",
+                        make_vertex_array(200, seed=7), sh_degree=0)
+        r1 = self._run("--input", str(src), "--output-dir", str(self.dir),
+                       "--quiet")
+        self.assertEqual(r1.returncode, 0, r1.stdout + r1.stderr)
+        r2 = self._run("--input", str(src), "--output-dir", str(self.dir),
+                       "--quiet")
+        self.assertEqual(r2.returncode, 2, r2.stdout + r2.stderr)
+        self.assertIn("refusing to overwrite", r2.stdout + r2.stderr)
+        self.assertNotIn("Traceback", r2.stderr)
 
     def test_cli_exit_0_full_run(self):
         src = write_ply(self.dir / "scene.ply",
