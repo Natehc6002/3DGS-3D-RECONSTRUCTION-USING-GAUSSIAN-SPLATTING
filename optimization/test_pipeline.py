@@ -15,6 +15,8 @@ import numpy as np
 from plyfile import PlyData, PlyElement
 
 from optimization.pipeline import run_pipeline
+from optimization.quantize import core as route_b_core
+from optimization.quantize import sh_truncate
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BRUSH_COMMENTS = ["Exported from Brush", "Vertical axis: y"]
@@ -327,6 +329,57 @@ class TestPipelineRun(PipelineTestCase):
         self.assertEqual(res["exit_code"], 2)
         self.assertIn("overwrite the input", res["error"])
         self.assertEqual(self.src.read_bytes(), self.original_bytes)
+
+
+class TestRouteBPresetPinning(PipelineTestCase):
+    """Pin the Route B preset behind every published .npz number.
+
+    The 10.26 MB (evaluation run) vs 7.41 MB (pipeline smoke run) sizes
+    came from the same preset on DIFFERENT inputs: the evaluation run
+    encoded the smart-pruned SH-degree-3 PLY (45 f_rest), the pipeline
+    smoke run encoded the post-truncation SH-degree-2 PLY (24 f_rest)
+    because pipeline Route B encodes final_ply. Same code, same bits,
+    different input SH degree.
+    """
+
+    def test_pipeline_uses_core_default_opts(self):
+        v = make_vertex_array(300, seed=12, sh_degree=3)
+        src = write_ply(self.dir / "scene.ply", v, sh_degree=3)
+        res = run_pipeline(src, self.dir, prune=False, route_b=True,
+                           quiet=True)
+        self.assertEqual(res["status"], "ok", res.get("error"))
+        self.assertEqual(res["route_b"]["settings_bits"],
+                         dict(route_b_core.DEFAULT_OPTS))
+
+    def test_same_input_same_bytes_as_direct_encode(self):
+        # pipeline route_b and core.encode_ply must agree byte for byte
+        # on the same input with the default preset
+        v = make_vertex_array(300, seed=13, sh_degree=3)
+        src = write_ply(self.dir / "scene.ply", v, sh_degree=3)
+        direct = self.dir / "direct.npz"
+        route_b_core.encode_ply(src, direct)
+        res = run_pipeline(src, self.dir, prune=False, route_b=True,
+                           quiet=True)
+        self.assertEqual(res["status"], "ok", res.get("error"))
+        pipe_npz = Path(res["outputs"]["npz"])
+        self.assertEqual(direct.stat().st_size, pipe_npz.stat().st_size)
+        self.assertEqual(direct.read_bytes(), pipe_npz.read_bytes())
+
+    def test_npz_size_depends_on_input_sh_degree(self):
+        # same Gaussians, same preset: degree-3 input archives larger
+        # than its degree-2 truncation (the 10.26 vs 7.41 MB cause)
+        v = make_vertex_array(600, seed=14, sh_degree=3)
+        src3 = write_ply(self.dir / "d3.ply", v, sh_degree=3)
+        src2 = self.dir / "d2.ply"
+        sh_truncate.truncate(src3, src2, 2)
+        npz3 = self.dir / "d3.npz"
+        npz2 = self.dir / "d2.npz"
+        route_b_core.encode_ply(src3, npz3)
+        route_b_core.encode_ply(src2, npz2)
+        self.assertGreater(npz3.stat().st_size, npz2.stat().st_size)
+        # f_rest dominates: 45 vs 24 float32 columns per Gaussian
+        rest3 = sum(1 for n in v.dtype.names if n.startswith("f_rest_"))
+        self.assertEqual(rest3, 45)
 
 
 class TestPipelineCLI(PipelineTestCase):

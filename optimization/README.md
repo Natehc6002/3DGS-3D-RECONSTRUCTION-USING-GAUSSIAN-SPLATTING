@@ -193,16 +193,20 @@ never empty one, but at frac 0.5 they still lose >=50% in 432 voxels.
 | original | A SH | degree 2 | 39.26 MB | 1.55x |
 | original | A SH | degree 1 | 23.77 MB | 2.57x |
 | original | A SH | degree 0 | 14.47 MB | 4.21x |
-| original | B npz | pos16/rot8/scale16/op16/dc16/rest8 | 14.52 MB | 4.20x |
+| original | B npz | pos16/rot8/scale16/op16/dc16/rest8, input SH degree 3 | 14.52 MB | 4.20x |
 | original | C gzip | level 6 | 57.07 MB | 1.07x |
 | smart default | A SH | degree 2 | 27.74 MB | 2.20x |
 | smart default | A SH | degree 1 | 16.79 MB | 3.63x |
 | smart default | A SH | degree 0 | 10.22 MB | 5.97x |
-| smart default | B npz | default bits | 10.26 MB | 5.94x |
+| smart default | B npz | pos16/rot8/scale16/op16/dc16/rest8, input SH degree 3 | 10.26 MB | 5.94x |
 | smart default | C gzip | level 6 | 40.31 MB | 1.51x |
 
 Route B `.npz` sizes are storage sizes; Brush only ever opens the decoded
-PLY (same size as the source: 60.96 MB / 43.07 MB).
+PLY (same size as the source: 60.96 MB / 43.07 MB). **Every `.npz`
+number in this repository uses the same bit preset** (`pos 16, rot 8,
+scale 16, opacity 16, dc 16, rest 8` = `quantize/core.py` `DEFAULT_OPTS`,
+`np.savez_compressed`); archive size then depends only on the **input
+file's SH degree** (see "npz size discrepancy" below).
 
 ### Evaluation table (`results/evaluation_table.csv`)
 
@@ -223,13 +227,35 @@ Measured this session with each tool's own timer:
 prune itself is the smart_default row above. PSNR/SSIM/FPS: **not
 measured** for every row.
 
+### Why the same scene shows two `.npz` sizes (10.26 vs 7.41 MB)
+
+Both numbers use the **same code path and the same preset** (`pos16
+rot8 scale16 opacity16 dc16 rest8`, `np.savez_compressed`); the only
+difference is the **input file**:
+
+| number | run | input to Route B | input SH | input size |
+|---|---|---|---|---|
+| 10.26 MB | `size_reduction_figurine.csv` (quantize CLI) | `fig_30k_smart_default.ply` | degree 3 (45 `f_rest`) | 43.07 MB |
+| 7.41 MB | pipeline smoke run (`--sh-degree 2 --route-b`) | `fig_30k_smart_shd2.ply` (`final_ply`, after truncation) | degree 2 (24 `f_rest`) | 27.74 MB |
+
+Verified on this machine with identical settings: encoding the same
+degree-3 smart PLY through the quantize CLI and through
+`run_pipeline(..., route_b=True)` produces **byte-identical** archives
+(10,259,142 bytes each); encoding its degree-2 truncation produces
+7,408,556 bytes. Pipeline Route B always encodes `final_ply` (after any
+`--sh-degree` truncation), which is why the smoke-run archive is smaller.
+Pinned by `test_pipeline.py::TestRouteBPresetPinning`.
+
 ### Pipeline smoke run (same scene)
 
 ```text
 inspect 0.395 s | smart_prune 1.811 s | sh_truncate(2) 13.184 s |
 route_b 9.372 s | total 24.766 s
 258,309 -> 182,489 Gaussians; 60.96 -> 43.07 MB (1.4155x) ->
-27.74 MB with SH degree 2 (2.1977x); npz 7.41 MB (8.2287x vs original);
+27.74 MB with SH degree 2 (2.1977x);
+npz 7.41 MB (8.2287x vs original), preset pos16/rot8/scale16/op16/dc16/rest8,
+input = the SH-degree-2 final PLY (not the degree-3 smart PLY - see the
+"npz size discrepancy" section);
 coverage: 0 emptied, 0 over 50% loss; round trip within quantization step
 ```
 
