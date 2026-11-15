@@ -63,6 +63,11 @@ def inspect(path):
     if missing:
         return info
 
+    if n == 0:
+        # stats on an empty element would raise; report it instead
+        info["empty"] = True
+        return info
+
     st = {k: stats(v[k]) for k in CORE + dc}
     info["stats"] = st
 
@@ -96,6 +101,9 @@ def report(info):
     print(f"f_rest stored in numeric order: {info['f_rest_numeric_order']}")
     if info["missing_core"]:
         print("MISSING core properties:", info["missing_core"])
+        return
+    if info.get("empty"):
+        print("Empty vertex element: 0 Gaussians")
         return
     print(f"All values finite: {info['finite_all']}")
     print("\nAttribute stats (raw stored values):")
