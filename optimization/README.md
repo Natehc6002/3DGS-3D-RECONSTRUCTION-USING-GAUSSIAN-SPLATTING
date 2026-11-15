@@ -147,9 +147,12 @@ Stages: `inspect -> smart_prune -> sh_truncate (optional) -> route_b
 output already exists, **3** stage failure (error is written into the
 report; partial outputs of that run are removed).
 
-Defaults are deliberately conservative because the Brush visual verdicts
-are still *not tested*: smart pruning **on** (spatial safety is verified
-by the voxel invariant), SH truncation **off**, Route B **off**.
+Defaults are chosen only from Brush verdicts: smart pruning **on**
+(spatial safety verified by the voxel invariant: 0 emptied vs baseline
+610), SH truncation **off** (only smart_shd2 has a load result -
+"opens in Brush 0.3.0, visual comparison against original pending" -
+and shd1/shd0 are "not tested"), Route B **off** (decoded PLY "not
+tested").
 
 ### 9. Evaluation (`evaluate.py`)
 
@@ -264,25 +267,47 @@ Report: `<output-dir>/<stem>_pipeline.json`, CSV log:
 
 ### Brush verdicts
 
-Every optimized file still shows **not tested** - nobody has opened them
-in Brush yet:
+Only **one** optimized file has been opened in Brush 0.3.0 so far
+(everything else stays `not tested` - no verdict is guessed):
 
 | file | Brush verdict |
 |---|---|
 | smart default (`*_smart.ply`) | not tested |
-| shd2 / shd1 / shd0 | not tested |
+| **shd2 (`fig_30k_smart_shd2.ply`, 182,489 splats, 27.74 MB)** | **opens ok** - Brush reported SH degree 2 and 182,489 splats, no load error. Front/side views clean; blur and streaks appear when the camera leaves the training path (expected novel-view behaviour, **not** compared against the original under the same path, so not attributable to pruning or SH truncation). No holes noticed in the viewed frames. Colour shift / flat shading versus the original: not judged. |
+| shd1 / shd0 | not tested |
 | Route B decoded (`*_qback.ply`) | not tested |
+| pipeline combo shd2 output | not tested |
+
+Test environment limit: the Brush run above used the **Intel
+integrated GPU** (Stats panel: "Intel(R) RaptorLake-S Mobile Graphics
+Controller", Type `IntegratedGpu`, driver 101.7026), not the NVIDIA RTX
+4060, with `WGPU_BACKEND=vulkan` (the DirectX 12 backend crashes on a
+shader compile error, FXC X3695). See `tools/README_brush_gpu.md`.
 
 Fill `BRUSH_LOAD_STATUS` in `evaluate.py` (and this table) only after a
-visual check. Until then the recommended defaults stay as they are.
+visual check.
+
+### Recommended pipeline defaults (chosen only from verdicts)
+
+| default | setting | reason (one sentence) |
+|---|---|---|
+| smart prune | **on** | spatial safety is verified independently (0 voxels emptied vs baseline's 610) and no prune output has ever failed to load - but note no pruned-only file has a Brush verdict, so "not tested" applies to its visuals. |
+| SH truncation | **off** | only `smart_shd2` has a load result ("opens in Brush 0.3.0, visual comparison against original pending"), which is not enough to make degree 2 a default, and shd1/shd0 are "not tested". |
+| Route B | **off** | the decoded PLY is "not tested" in Brush and the archive is storage-only, so there is no verdict to justify enabling it. |
 
 ## Limits
 
 - **No quality metrics.** PSNR, SSIM and FPS are not computed anywhere in
   this repository; they read `not measured` in every table. The coverage
   columns are geometric proxies only.
-- **Brush verdicts pending.** All optimized variants are `not tested`;
-  size and spatial safety are measured, visual quality is not.
+- **Brush verdicts: one file only.** `fig_30k_smart_shd2.ply` opens in
+  Brush 0.3.0 (no load error); visual comparison against the original is
+  pending. All other optimized variants are `not tested`; size and
+  spatial safety are measured, visual quality is not.
+- **Test environment limit.** The only Brush run so far used the Intel
+  integrated GPU (`IntegratedGpu`), not the NVIDIA RTX 4060, with the
+  Vulkan backend (DirectX 12 crashes on shader compile error FXC X3695).
+  Any verdict here carries that limit; see `tools/README_brush_gpu.md`.
 - **Route B shrinks storage, not the in-Brush PLY.** Brush cannot read
   `.npz`; the decoded PLY is the same size as its source.
 - **Route C `.gz` is not Brush-readable** either (gunzip restores the

@@ -54,11 +54,17 @@ COLUMNS = (
 
 # Manual Brush verdicts - update ONLY after a visual check in Brush.
 # Anything not verified must stay "not tested".
+# smart_shd2: opened in Brush 0.3.0 (Vulkan, Intel iGPU - see
+# tools/README_brush_gpu.md), reported SH degree 2 / 182,489 splats, no
+# load error. Blur/streaks off the training path were not compared
+# against the original under the same camera path, so they are not
+# attributed to pruning or SH truncation; colour shift / flat shading
+# were not judged. Everything else is untested.
 BRUSH_LOAD_STATUS = {
     "original": "n/a (Brush export)",
     "baseline_prune": "not tested",
     "smart_default": "not tested",
-    "smart_shd2": "not tested",
+    "smart_shd2": "opens ok (no load error)",
     "smart_shd1": "not tested",
     "smart_shd0": "not tested",
     "route_b_decoded": "not tested",
@@ -68,7 +74,9 @@ NOTES = {
     "original": "reference Brush export",
     "baseline_prune": "baseline opacity prune (threshold 0.05)",
     "smart_default": "smart prune, max_voxel_fraction 0.3, no emptied voxels",
-    "smart_shd2": "smart default, SH truncated to degree 2",
+    "smart_shd2": ("smart default, SH truncated to degree 2; opens in "
+                   "Brush 0.3.0 (SH degree 2, 182,489 splats), visual "
+                   "comparison against original pending"),
     "smart_shd1": "smart default, SH truncated to degree 1",
     "smart_shd0": "smart default, SH truncated to degree 0 (no view-dependent colour)",
     "route_b_decoded": "smart default quantized to .npz, decoded back to PLY",

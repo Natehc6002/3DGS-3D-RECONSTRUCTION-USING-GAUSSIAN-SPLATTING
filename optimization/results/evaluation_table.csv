@@ -2,7 +2,7 @@ variant,gaussians,file_size_mb,size_ratio,processing_time_s,coverage_proxy,route
 original,258309,60.96,1.0,n/a,n/a (no removals),n/a,n/a (Brush export),not measured,not measured,not measured,reference Brush export
 baseline_prune,178344,42.09,1.448,0.3,voxels emptied 610; over 50% loss 910; max loss 1.000,n/a,not tested,not measured,not measured,not measured,baseline opacity prune (threshold 0.05)
 smart_default,182489,43.07,1.415,1.1,voxels emptied 0; over 50% loss 0; max loss 0.300,n/a,not tested,not measured,not measured,not measured,"smart prune, max_voxel_fraction 0.3, no emptied voxels"
-smart_shd2,182489,27.74,2.198,13.1,n/a (layout differs from original),n/a,not tested,not measured,not measured,not measured,"smart default, SH truncated to degree 2"
+smart_shd2,182489,27.74,2.198,13.1,n/a (layout differs from original),n/a,opens ok (no load error),not measured,not measured,not measured,"smart default, SH truncated to degree 2; opens in Brush 0.3.0 (SH degree 2, 182,489 splats), visual comparison against original pending"
 smart_shd1,182489,16.79,3.631,12.7,n/a (layout differs from original),n/a,not tested,not measured,not measured,not measured,"smart default, SH truncated to degree 1"
 smart_shd0,182489,10.22,5.965,12.8,n/a (layout differs from original),n/a,not tested,not measured,not measured,not measured,"smart default, SH truncated to degree 0 (no view-dependent colour)"
 route_b_decoded,182489,43.07,1.415,13.7,n/a (not an exact subset of original),0.00547457,not tested,not measured,not measured,not measured,"smart default quantized to .npz, decoded back to PLY"
