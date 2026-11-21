@@ -269,13 +269,13 @@ Report: `<output-dir>/<stem>_pipeline.json`, CSV log:
 
 ### Brush verdicts
 
-Only **one** optimized file has a recorded verdict (everything else
-stays `not tested` - no verdict is guessed). The GPU used per entry is
-part of `BRUSH_LOAD_STATUS` in `evaluate.py`:
+Two files have a recorded verdict (everything else stays `not tested` -
+no verdict is guessed). The GPU used per entry is part of
+`BRUSH_LOAD_STATUS` in `evaluate.py`:
 
 | file | Brush verdict | GPU used |
 |---|---|---|
-| original (`figure_30k_30000.ply`, reference) | n/a (Brush export) - no verdict recorded | n/a |
+| **original (`figure_30k_30000.ply`, reference, 258,309 splats, 60.96 MB)** | **opens OK** - Stats panel: Splats `258309`, SH Degree `3`, Bytes in use `60.96 MB`. From the screen recording: the figure is **not centred at first view** (small, lower right, camera faces the room) and is tiny compared with the room background; long needle/streak splats cross the view whenever the camera leaves the training path; fog and ghost splats near the floor; mirrored copies of the figure and background appear under the marble floor (reflection baked in as geometry); general blur off the training path. **Not judged:** up-axis tilt, colour shift versus other files. The cause of the off-centre start is **not proven**. | NVIDIA GeForce RTX 4060 Laptop GPU (`DiscreteGpu`, driver `NVIDIA, 581.86`) |
 | baseline (`*_pruned_opacity005.ply`) | not tested | not tested |
 | smart default (`*_smart.ply`) | not tested | not tested |
 | **shd2 (`fig_30k_smart_shd2.ply`, 182,489 splats, 27.74 MB)** | **opens ok** - Brush reported SH degree 2 and 182,489 splats, no load error. Front and side views clean; no holes noticed in the main body. Blur and streaks appear only when the camera leaves the training path (expected novel-view behaviour, **not** compared against the original under the same path, so not attributable to pruning or SH truncation). Colour shift / flat shading versus the original: **not judged**. | Intel iGPU (Vulkan) |
@@ -283,16 +283,15 @@ part of `BRUSH_LOAD_STATUS` in `evaluate.py`:
 | Route B decoded (`*_qback.ply`) | not tested | not tested |
 | pipeline combo shd2 output | not tested | not tested |
 
-Test environment: the verdict above was obtained on the **Intel
-integrated GPU** (Stats panel: "Intel(R) RaptorLake-S Mobile Graphics
-Controller", Type `IntegratedGpu`, driver 101.7026) with
-`WGPU_BACKEND=vulkan`. A later launch with
-`VK_DRIVER_FILES=<nvidia nv-vk64.json>` + `WGPU_BACKEND=vulkan` **was
-confirmed by the user to run on the NVIDIA RTX 4060** (Stats panel text
-Name `<...>`, Type `<...>` as reported); no verdict in this table has
-been re-recorded on that GPU. The DirectX 12 backend crashes Brush
-0.3.0 on this machine (FXC X3695), so Vulkan only. See
-`tools/README_brush_gpu.md`.
+Test environment: two Brush 0.3.0 runs are recorded on this machine.
+The original-file verdict used the **NVIDIA GeForce RTX 4060 Laptop
+GPU** via the launcher's `-Gpu auto` mode (Stats panel: Name
+"NVIDIA GeForce RTX 4060 Laptop GPU", Type `DiscreteGpu`, Driver
+`NVIDIA, 581.86`); the `smart_shd2` verdict was obtained earlier on the
+**Intel integrated GPU** (Stats panel: "Intel(R) RaptorLake-S Mobile
+Graphics Controller", Type `IntegratedGpu`, driver 101.7026). Both used
+`WGPU_BACKEND=vulkan`; the DirectX 12 backend crashes Brush 0.3.0 on
+this machine (FXC X3695). See `tools/README_brush_gpu.md`.
 
 Fill `BRUSH_LOAD_STATUS` in `evaluate.py` (and this table) only after a
 visual check.
@@ -310,17 +309,21 @@ visual check.
 - **No quality metrics.** PSNR, SSIM and FPS are not computed anywhere in
   this repository; they read `not measured` in every table. The coverage
   columns are geometric proxies only.
-- **Brush verdicts: one file only.** `fig_30k_smart_shd2.ply` opens in
-  Brush 0.3.0 (no load error, front/side views clean, no holes noticed
-  in the main body); colour shift and flat shading versus the original
-  were not judged. All other optimized variants are `not tested`; size
-  and spatial safety are measured, visual quality is not.
-- **Test environment limit.** The one recorded verdict was obtained on
-  the Intel integrated GPU (`IntegratedGpu`), not the NVIDIA RTX 4060,
-  with the Vulkan backend (DirectX 12 crashes on shader compile error
-  FXC X3695). The NVIDIA path (`VK_DRIVER_FILES` + Vulkan) is confirmed
-  working by user report (Stats panel text `<...>` as reported), but no
-  verdict has been re-recorded on it; see `tools/README_brush_gpu.md`.
+- **Brush verdicts: two files only.** `figure_30k_30000.ply` (original)
+  and `fig_30k_smart_shd2.ply` open in Brush 0.3.0; the shd2 file has
+  no load error, front/side views clean, no holes noticed in the main
+  body, and colour shift / flat shading versus the original were not
+  judged. The original's verdict records the off-centre first view,
+  needle/streak splats, floor fog/ghosts and mirrored copies under the
+  floor as observed - their causes are not established here. All other
+  optimized variants are `not tested`; size and spatial safety are
+  measured, visual quality is not.
+- **Test environment limit.** Both recorded verdicts come from Brush
+  0.3.0 with the Vulkan backend (DirectX 12 crashes on shader compile
+  error FXC X3695): the original on the NVIDIA RTX 4060
+  (`DiscreteGpu`, driver `NVIDIA, 581.86`), `smart_shd2` on the Intel
+  integrated GPU (`IntegratedGpu`, driver 101.7026). Each verdict
+  carries its own GPU; see `tools/README_brush_gpu.md`.
 - **Route B shrinks storage, not the in-Brush PLY.** Brush cannot read
   `.npz`; the decoded PLY is the same size as its source.
 - **Route C `.gz` is not Brush-readable** either (gunzip restores the

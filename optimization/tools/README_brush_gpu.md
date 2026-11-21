@@ -14,10 +14,11 @@ nothing is extrapolated to other GPUs or Brush versions.
 | `$env:VK_DRIVER_FILES` = NVIDIA Vulkan ICD json **together with** `$env:WGPU_BACKEND = "vulkan"` | **worked** - Brush used the NVIDIA GPU (reported by Chetan I S). |
 | DirectX 12 backend (`WGPU_BACKEND=d3d12`) | **crashes** Brush 0.3.0 on this machine (shader compile error, FXC X3695). Only Vulkan works. |
 
-**NVIDIA run confirmed by user, Stats panel text: Name `<...>`, Type
-`<...>`** (verbatim as reported by the user; the exact panel text was
-not transcribed into this document - re-check it yourself with the
-verification steps below whenever you want to be sure).
+**NVIDIA run confirmed by Chetan I S (screen recording), Stats panel
+text verbatim:** Name `NVIDIA GeForce RTX 4060 Laptop GPU`, Type
+`DiscreteGpu`, Driver `NVIDIA, 581.86`, Splats `258309`, SH Degree `3`,
+Bytes in use `60.96 MB` - for `figure_30k_30000.ply` opened with the
+launcher in `-Gpu auto` mode, Brush 0.3.0, opens OK.
 
 The ICD json found on this machine:
 
@@ -168,18 +169,22 @@ Add `brush_app.exe` -> "High-performance NVIDIA processor" -> Apply.
    GPU to apps when the dGPU drives the display - check your laptop
    vendor app (Lenovo Vantage, MyASUS, Armoury Crate, ...) or BIOS for
    "MUX switch" / "Discrete graphics" / "nVIDIA only" modes.
-3. Update the NVIDIA driver (current on this machine: 32.0.15.8186) via
-   NVIDIA GeForce Experience or the laptop vendor - then re-run the
+3. Update the NVIDIA driver (Win32 version on this machine:
+   32.0.15.8186; Brush's Stats panel reports it as `NVIDIA, 581.86`)
+   via NVIDIA GeForce Experience or the laptop vendor - then re-run the
    launcher so it picks up the new `nv-vk64.json` folder.
 
 ## Status
 
 - `VK_DRIVER_FILES` + `WGPU_BACKEND=vulkan`: **NVIDIA run confirmed by
-  user** (Stats panel text Name `<...>`, Type `<...>` as reported).
+  Chetan I S** - Stats panel: Name `NVIDIA GeForce RTX 4060 Laptop GPU`,
+  Type `DiscreteGpu`, Driver `NVIDIA, 581.86`, Splats `258309`,
+  SH Degree `3`, Bytes in use `60.96 MB`.
 - Registry preference alone: **confirmed not sufficient** on this
   machine (Brush stayed on Intel).
 - DirectX 12 backend: **crashes** Brush 0.3.0 here (FXC X3695); Vulkan
   only.
-- Early Brush verdicts in `optimization/README.md` were obtained on the
-  Intel integrated GPU; the GPU used per file is recorded next to each
-  verdict.
+- GPU per Brush verdict: the original `figure_30k_30000.ply` verdict was
+  recorded on the NVIDIA RTX 4060; the `smart_shd2` verdict was
+  recorded earlier on the Intel integrated GPU. Both are recorded next
+  to each verdict in `optimization/README.md`.
