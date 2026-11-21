@@ -19,7 +19,8 @@ modified and existing outputs are never overwritten.
 | `evaluate.py` | comparison table (CSV + markdown) from real files |
 | `results/` | small CSV/JSON results committed with the repo |
 
-Tests: `optimization/test_smart_prune.py`, `optimization/test_quantize.py`,
+Tests: `optimization/pruning/test_smart_prune.py`,
+`optimization/quantize/test_quantize.py`,
 `optimization/test_pipeline.py`, `optimization/test_evaluate.py`.
 
 ## PLY attribute reference (Brush exports)
