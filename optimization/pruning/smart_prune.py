@@ -24,7 +24,8 @@ Usage:
         [--importance-threshold 0.0001] [--knn-k 5] [--iso-percentile 99]
         [--size-percentile 99.9] [--body-percentile-low 0.5]
         [--body-percentile-high 99.5] [--body-margin 20]
-        [--remove-singleton-floaters] [--json report.json]
+        [--remove-singleton-floaters] [--needle-cleanup]
+        [--json report.json]
 
 Exit codes: 0 success, 2 bad arguments or paths, 3 failure.
 """
@@ -43,9 +44,17 @@ SCALE_KEYS = ("scale_0", "scale_1", "scale_2")
 ROT_KEYS = ("rot_0", "rot_1", "rot_2", "rot_3")
 REQUIRED = POS_KEYS + ("opacity",) + ROT_KEYS + SCALE_KEYS
 
-REASON_OUTSIDE, REASON_ISOLATED, REASON_SIZE, REASON_IMPORTANCE = 0, 1, 2, 3
-REASON_NAMES = ("outside_body", "isolated", "size_outlier", "low_importance")
+REASON_OUTSIDE, REASON_ISOLATED, REASON_NEEDLE = 0, 1, 2
+REASON_SIZE, REASON_IMPORTANCE = 3, 4
+REASON_NAMES = ("outside_body", "isolated", "needle", "size_outlier",
+                "low_importance")
 NO_REASON = -1
+
+# Scene-relative needle criteria, identical to analyze_scene.count_needles
+# (anisotropy >= max(ratio floor, p99) AND max axis >= p99).
+NEEDLE_ANISO_RATIO = 8.0
+NEEDLE_ANISO_PCT = 99.0
+NEEDLE_SIZE_PCT = 99.0
 
 
 def sigmoid(x):
@@ -95,7 +104,8 @@ def importance_scores(v):
 
 
 def build_flags(xyz, v, knn_k, iso_percentile, size_percentile,
-                body_percentile_low, body_percentile_high, body_margin):
+                body_percentile_low, body_percentile_high, body_margin,
+                needle_cleanup=False):
     """Boolean flag arrays plus the thresholds that produced them."""
     n = len(xyz)
     if n == 0:
@@ -111,30 +121,53 @@ def build_flags(xyz, v, knn_k, iso_percentile, size_percentile,
     size_thr = float(np.percentile(sc, size_percentile))
     size_out = sc > size_thr
 
+    if needle_cleanup:
+        axes = np.exp(np.stack([v[k] for k in SCALE_KEYS],
+                               axis=1).astype(np.float64))
+        ax_hi = axes.max(axis=1)
+        ax_lo = np.maximum(axes.min(axis=1), np.finfo(np.float64).tiny)
+        aniso = ax_hi / ax_lo
+        aniso_thr = max(NEEDLE_ANISO_RATIO,
+                        float(np.percentile(aniso, NEEDLE_ANISO_PCT)))
+        needle_thr = float(np.percentile(sc, NEEDLE_SIZE_PCT))
+        needle = (aniso >= aniso_thr) & (sc >= needle_thr)
+    else:
+        aniso_thr = None
+        needle_thr = None
+        needle = np.zeros(n, dtype=bool)
+
     lo = np.percentile(xyz, body_percentile_low, axis=0)
     hi = np.percentile(xyz, body_percentile_high, axis=0)
     blo = lo - body_margin
     bhi = hi + body_margin
     outside = np.any((xyz < blo) | (xyz > bhi), axis=1)
 
-    flags = {"outside_body": outside, "isolated": isolated, "size_outlier": size_out}
+    flags = {"outside_body": outside, "isolated": isolated,
+             "size_outlier": size_out, "needle": needle}
     thresholds = {
         "knn_k": int(knn_k),
         "isolation_distance": iso_thr,
         "size_limit": size_thr,
         "body_box_raw": [float(x) for x in np.concatenate([lo, hi])],
         "body_box_used": [float(x) for x in np.concatenate([blo, bhi])],
+        "needle_enabled": bool(needle_cleanup),
+        "needle_aniso_threshold": aniso_thr,
+        "needle_size_threshold": needle_thr,
     }
     return flags, thresholds
 
 
 def primary_reason(flags, low_importance):
     """Per-Gaussian reason, -1 if not flagged. Precedence: outside >
-    isolated > size > low_importance (a Gaussian can carry several flags)."""
+    isolated > needle > size > low_importance (a Gaussian can carry
+    several flags)."""
     n = len(low_importance)
     r = np.full(n, NO_REASON, dtype=np.int8)
     r[flags["outside_body"]] = REASON_OUTSIDE
     r[flags["isolated"] & (r == NO_REASON)] = REASON_ISOLATED
+    needle = flags.get("needle")
+    if needle is not None:
+        r[needle & (r == NO_REASON)] = REASON_NEEDLE
     r[flags["size_outlier"] & (r == NO_REASON)] = REASON_SIZE
     r[low_importance & (r == NO_REASON)] = REASON_IMPORTANCE
     return r
@@ -224,11 +257,14 @@ def analyse(v, xyz, flags, low_importance, sel, thresholds):
     remove = sel["remove"]
     n = len(v)
     reason = primary_reason(flags, low_importance)
-    geo = flags["outside_body"] | flags["isolated"] | flags["size_outlier"]
+    geo = (flags["outside_body"] | flags["isolated"]
+           | flags["size_outlier"] | flags.get("needle",
+                                               np.zeros(n, dtype=bool)))
     cand = geo | low_importance
 
     flagged_counts = {name: int(flags[name].sum())
-                      for name in ("outside_body", "isolated", "size_outlier")}
+                      for name in ("outside_body", "isolated", "needle",
+                                   "size_outlier")}
     flagged_counts["low_importance"] = int(low_importance.sum())
     removed_reason = {REASON_NAMES[r]: int(((reason == r) & remove).sum())
                       for r in range(len(REASON_NAMES))}
@@ -236,6 +272,8 @@ def analyse(v, xyz, flags, low_importance, sel, thresholds):
                       for name, flag in
                       (("outside_body", flags["outside_body"]),
                        ("isolated", flags["isolated"]),
+                       ("needle", flags.get("needle",
+                                            np.zeros(n, dtype=bool))),
                        ("size_outlier", flags["size_outlier"]),
                        ("low_importance", low_importance))}
 
@@ -311,7 +349,8 @@ def report(info, settings, sizes, elapsed):
           f"size_percentile={settings['size_percentile']}, "
           f"body=({settings['body_low']}..{settings['body_high']}"
           f"+{settings['body_margin']}), "
-          f"singleton_floaters={settings['singleton']}")
+          f"singleton_floaters={settings['singleton']}, "
+          f"needle_cleanup={settings.get('needle', False)}")
     n, k = info["original_count"], info["pruned_count"]
     print(f"Gaussians:  {n} -> {k}  (kept {k / n * 100:.2f}%, "
           f"removed {info['removed_count']})")
@@ -362,6 +401,10 @@ def report(info, settings, sizes, elapsed):
     print(f"\nThresholds: isolation kNN distance > {thr['isolation_distance']:.4f}, "
           f"max axis exp(scale) > {thr['size_limit']:.4f}, "
           f"body box {np.round(thr['body_box_used'], 2).tolist()}")
+    if thr.get("needle_enabled"):
+        print(f"Needles:    anisotropy >= {thr['needle_aniso_threshold']:.4g} "
+              f"AND max axis >= {thr['needle_size_threshold']:.4g} "
+              f"(scene-relative; identical to analyze_scene)")
 
     flagged = (c["top1pct_voxel_share_of_removals"] > 0.5
                or (info["voxels_emptied"] > 0 and not info["singleton_mode"]))
@@ -389,11 +432,13 @@ def prune(src, dst, opts):
     importance = importance_scores(v)
     flags, thresholds = build_flags(
         xyz, v, opts["knn_k"], opts["iso_percentile"], opts["size_percentile"],
-        opts["body_low"], opts["body_high"], opts["body_margin"])
+        opts["body_low"], opts["body_high"], opts["body_margin"],
+        needle_cleanup=bool(opts.get("needle", False)))
     low_importance = importance < opts["importance_threshold"]
 
-    sel = select_removals(xyz,
-                          flags["outside_body"] | flags["isolated"] | flags["size_outlier"],
+    geo = (flags["outside_body"] | flags["isolated"]
+           | flags["size_outlier"] | flags["needle"])
+    sel = select_removals(xyz, geo,
                           low_importance, importance,
                           opts["max_fraction"], opts["voxel_size"],
                           allow_singleton_floaters=opts["singleton"])
@@ -435,6 +480,11 @@ def main():
     ap.add_argument("--remove-singleton-floaters", action="store_true",
                     help="EXCEPTION: allow removing a lone geo-flagged Gaussian "
                          "even though its voxel becomes empty (default off)")
+    ap.add_argument("--needle-cleanup", action="store_true",
+                    help="also flag needle Gaussians (anisotropy >= max(8, p99) "
+                         "AND max axis >= p99, scene-relative; identical to "
+                         "analyze_scene) and remove them under the voxel budget "
+                         "(default off)")
     ap.add_argument("--json", help="also write the report to this JSON file")
     a = ap.parse_args()
 
@@ -484,6 +534,7 @@ def main():
         "body_high": a.body_percentile_high,
         "body_margin": a.body_margin,
         "singleton": bool(a.remove_singleton_floaters),
+        "needle": bool(a.needle_cleanup),
     }
     settings = {"input": str(src), "output": str(dst), **opts,
                 "singleton": opts["singleton"]}
