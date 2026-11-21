@@ -19,7 +19,8 @@ modified and existing outputs are never overwritten.
 | `evaluate.py` | comparison table (CSV + markdown) from real files |
 | `results/` | small CSV/JSON results committed with the repo |
 
-Tests: `optimization/test_smart_prune.py`, `optimization/test_quantize.py`,
+Tests: `optimization/pruning/test_smart_prune.py`,
+`optimization/quantize/test_quantize.py`,
 `optimization/test_pipeline.py`, `optimization/test_evaluate.py`.
 
 ## PLY attribute reference (Brush exports)
@@ -148,11 +149,12 @@ output already exists, **3** stage failure (error is written into the
 report; partial outputs of that run are removed).
 
 Defaults are chosen only from Brush verdicts: smart pruning **on**
-(spatial safety verified by the voxel invariant: 0 emptied vs baseline
-610), SH truncation **off** (only smart_shd2 has a load result -
-"opens in Brush 0.3.0, visual comparison against original pending" -
-and shd1/shd0 are "not tested"), Route B **off** (decoded PLY "not
-tested").
+(voxel safety invariant measured: 0 emptied vs baseline 610, and the
+one pruned file with a verdict, `smart_shd2`, opens ok), SH truncation
+**off** (no verdict reports no visible colour/shading loss versus the
+original - `smart_shd2` colour shift/flat shading were not judged and
+shd1/shd0 are "not tested"), Route B **off** (storage-only, decoded
+PLY "not tested").
 
 ### 9. Evaluation (`evaluate.py`)
 
@@ -160,8 +162,8 @@ Builds `results/evaluation_table.csv` + `results/evaluation_summary.md`
 from real files. Columns that cannot be measured here are explicit:
 `processing_time_s` = `not measured` unless you pass `--time`,
 `psnr/ssim/fps` = always `not measured`, `brush_load_status` = the manual
-verdicts in `BRUSH_LOAD_STATUS` (anything unverified stays
-`not tested`).
+verdicts in `BRUSH_LOAD_STATUS` **including the GPU each file was viewed
+on** (anything unverified stays `not tested`).
 
 ```powershell
 python -m optimization.evaluate --original orig.ply `
@@ -267,22 +269,30 @@ Report: `<output-dir>/<stem>_pipeline.json`, CSV log:
 
 ### Brush verdicts
 
-Only **one** optimized file has been opened in Brush 0.3.0 so far
-(everything else stays `not tested` - no verdict is guessed):
+Only **one** optimized file has a recorded verdict (everything else
+stays `not tested` - no verdict is guessed). The GPU used per entry is
+part of `BRUSH_LOAD_STATUS` in `evaluate.py`:
 
-| file | Brush verdict |
-|---|---|
-| smart default (`*_smart.ply`) | not tested |
-| **shd2 (`fig_30k_smart_shd2.ply`, 182,489 splats, 27.74 MB)** | **opens ok** - Brush reported SH degree 2 and 182,489 splats, no load error. Front/side views clean; blur and streaks appear when the camera leaves the training path (expected novel-view behaviour, **not** compared against the original under the same path, so not attributable to pruning or SH truncation). No holes noticed in the viewed frames. Colour shift / flat shading versus the original: not judged. |
-| shd1 / shd0 | not tested |
-| Route B decoded (`*_qback.ply`) | not tested |
-| pipeline combo shd2 output | not tested |
+| file | Brush verdict | GPU used |
+|---|---|---|
+| original (`figure_30k_30000.ply`, reference) | n/a (Brush export) - no verdict recorded | n/a |
+| baseline (`*_pruned_opacity005.ply`) | not tested | not tested |
+| smart default (`*_smart.ply`) | not tested | not tested |
+| **shd2 (`fig_30k_smart_shd2.ply`, 182,489 splats, 27.74 MB)** | **opens ok** - Brush reported SH degree 2 and 182,489 splats, no load error. Front and side views clean; no holes noticed in the main body. Blur and streaks appear only when the camera leaves the training path (expected novel-view behaviour, **not** compared against the original under the same path, so not attributable to pruning or SH truncation). Colour shift / flat shading versus the original: **not judged**. | Intel iGPU (Vulkan) |
+| shd1 / shd0 | not tested | not tested |
+| Route B decoded (`*_qback.ply`) | not tested | not tested |
+| pipeline combo shd2 output | not tested | not tested |
 
-Test environment limit: the Brush run above used the **Intel
+Test environment: the verdict above was obtained on the **Intel
 integrated GPU** (Stats panel: "Intel(R) RaptorLake-S Mobile Graphics
-Controller", Type `IntegratedGpu`, driver 101.7026), not the NVIDIA RTX
-4060, with `WGPU_BACKEND=vulkan` (the DirectX 12 backend crashes on a
-shader compile error, FXC X3695). See `tools/README_brush_gpu.md`.
+Controller", Type `IntegratedGpu`, driver 101.7026) with
+`WGPU_BACKEND=vulkan`. A later launch with
+`VK_DRIVER_FILES=<nvidia nv-vk64.json>` + `WGPU_BACKEND=vulkan` **was
+confirmed by the user to run on the NVIDIA RTX 4060** (Stats panel text
+Name `<...>`, Type `<...>` as reported); no verdict in this table has
+been re-recorded on that GPU. The DirectX 12 backend crashes Brush
+0.3.0 on this machine (FXC X3695), so Vulkan only. See
+`tools/README_brush_gpu.md`.
 
 Fill `BRUSH_LOAD_STATUS` in `evaluate.py` (and this table) only after a
 visual check.
@@ -291,9 +301,9 @@ visual check.
 
 | default | setting | reason (one sentence) |
 |---|---|---|
-| smart prune | **on** | spatial safety is verified independently (0 voxels emptied vs baseline's 610) and no prune output has ever failed to load - but note no pruned-only file has a Brush verdict, so "not tested" applies to its visuals. |
-| SH truncation | **off** | only `smart_shd2` has a load result ("opens in Brush 0.3.0, visual comparison against original pending"), which is not enough to make degree 2 a default, and shd1/shd0 are "not tested". |
-| Route B | **off** | the decoded PLY is "not tested" in Brush and the archive is storage-only, so there is no verdict to justify enabling it. |
+| smart prune | **on** | the voxel safety invariant is measured (0 voxels emptied vs baseline's 610) and the only pruned file with a verdict, `smart_shd2`, opens ok - while `smart.ply` itself is "not tested". |
+| SH truncation | **off** (optional export: 27.74 / 16.79 / 10.22 MB for degree 2/1/0) | no verdict reports no visible colour or shading loss versus the original - `smart_shd2` opened ok but colour shift/flat shading were not judged, and `smart_shd1`/`smart_shd0` are "not tested". |
+| Route B | **off** (optional storage-only export) | Brush cannot read the `.npz` and the decoded `smart_qback.ply` is "not tested", so there is no verdict to justify enabling it. |
 
 ## Limits
 
@@ -301,13 +311,16 @@ visual check.
   this repository; they read `not measured` in every table. The coverage
   columns are geometric proxies only.
 - **Brush verdicts: one file only.** `fig_30k_smart_shd2.ply` opens in
-  Brush 0.3.0 (no load error); visual comparison against the original is
-  pending. All other optimized variants are `not tested`; size and
-  spatial safety are measured, visual quality is not.
-- **Test environment limit.** The only Brush run so far used the Intel
-  integrated GPU (`IntegratedGpu`), not the NVIDIA RTX 4060, with the
-  Vulkan backend (DirectX 12 crashes on shader compile error FXC X3695).
-  Any verdict here carries that limit; see `tools/README_brush_gpu.md`.
+  Brush 0.3.0 (no load error, front/side views clean, no holes noticed
+  in the main body); colour shift and flat shading versus the original
+  were not judged. All other optimized variants are `not tested`; size
+  and spatial safety are measured, visual quality is not.
+- **Test environment limit.** The one recorded verdict was obtained on
+  the Intel integrated GPU (`IntegratedGpu`), not the NVIDIA RTX 4060,
+  with the Vulkan backend (DirectX 12 crashes on shader compile error
+  FXC X3695). The NVIDIA path (`VK_DRIVER_FILES` + Vulkan) is confirmed
+  working by user report (Stats panel text `<...>` as reported), but no
+  verdict has been re-recorded on it; see `tools/README_brush_gpu.md`.
 - **Route B shrinks storage, not the in-Brush PLY.** Brush cannot read
   `.npz`; the decoded PLY is the same size as its source.
 - **Route C `.gz` is not Brush-readable** either (gunzip restores the
@@ -391,12 +404,14 @@ python -m pytest optimization -q
 # or: python -m unittest discover -s optimization -p "test_*.py" -t .
 ```
 
-Open a result in Brush:
+Open a result in Brush (sets `VK_DRIVER_FILES` + `WGPU_BACKEND=vulkan`
+for the Brush child process only; see `tools/README_brush_gpu.md`):
 
 ```powershell
-$env:WGPU_BACKEND="vulkan"; $env:WGPU_POWER_PREF="high"
-C:\Tools\Brush\brush_app.exe --with-viewer <ply path>
+.\optimization\tools\open_in_brush.ps1 -Ply <ply path>            # -Gpu auto (default)
+.\optimization\tools\open_in_brush.ps1 -Ply <ply path> -Gpu nvidia # require the NVIDIA ICD
+.\optimization\tools\open_in_brush.ps1 -Ply <ply path> -PrintOnly  # dry run, prints the command
 ```
 
-Check when viewing: colour shift (view-dependent effects), flat shading,
-holes, floaters, load errors.
+Check when viewing: Stats panel GPU name/type, colour shift
+(view-dependent effects), flat shading, holes, floaters, load errors.

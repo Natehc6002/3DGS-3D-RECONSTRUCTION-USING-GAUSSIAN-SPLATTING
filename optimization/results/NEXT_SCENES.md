@@ -71,9 +71,10 @@ Gaussian counts, sizes, ratios, coverage (`voxels_emptied`,
 Check in this order and write down the result for each item (use
 "not tested" if you do not check it):
 
-1. **Stats panel GPU name** - must be an NVIDIA name and Type
-   `DiscreteGpu`. If it still shows Intel / `IntegratedGpu`, record what
-   it shows; the GPU fix is unverified until this passes
+1. **Stats panel GPU name** - the launcher's default `-Gpu auto` points
+   Brush at the NVIDIA Vulkan ICD, so this must be an NVIDIA name and
+   Type `DiscreteGpu`. If it still shows Intel / `IntegratedGpu`, record
+   exactly what it shows and re-check with `-Gpu nvidia -PrintOnly`
    (`optimization/tools/README_brush_gpu.md`).
 2. **Load errors** - does the file open at all?
 3. **Reported splat count and SH degree** - must match the pipeline

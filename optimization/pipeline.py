@@ -62,11 +62,14 @@ CSV_COLUMNS = (
     "error", "report",
 )
 
-# Defaults follow the Brush verdicts only: smart pruning is on (spatial
-# safety verified: no voxel is emptied); SH truncation is off because
-# only smart_shd2 has a load result ("opens in Brush 0.3.0, visual
-# comparison against original pending") and shd1/shd0 are "not tested";
-# Route B is off because its decoded PLY is "not tested" in Brush.
+# Defaults follow the Brush verdicts only: smart pruning is on (voxel
+# safety invariant measured - 0 voxels emptied vs baseline 610); SH
+# truncation is off because no verdict reports no visible colour or
+# shading loss versus the original (smart_shd2 opened ok but colour
+# shift / flat shading were not judged, shd1/shd0 are "not tested"),
+# so it stays an optional export; Route B is off because it is
+# storage-only (Brush cannot read .npz) and its decoded PLY is
+# "not tested".
 DEFAULTS = {
     "max_voxel_fraction": 0.3,
     "voxel_size": 5.0,
