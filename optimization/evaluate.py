@@ -55,16 +55,27 @@ COLUMNS = (
 # Manual Brush verdicts - update ONLY after a visual check in Brush.
 # Anything not verified must stay "not tested"; each tested entry also
 # records the GPU it was viewed on (see tools/README_brush_gpu.md).
-# smart_shd2: opened in Brush 0.3.0 on the Intel iGPU (Vulkan backend),
+# original: opened in Brush 0.3.0 on the NVIDIA RTX 4060 (launcher
+# -Gpu auto; Stats panel "NVIDIA GeForce RTX 4060 Laptop GPU",
+# DiscreteGpu, driver NVIDIA 581.86, Splats 258309, SH Degree 3,
+# Bytes in use 60.96 MB). Screen recording: figure not centred at first
+# view (small, lower right, camera faces the room), subject tiny vs the
+# room background, long needle/streak splats whenever the camera leaves
+# the training path, fog and ghost splats near the floor, mirrored
+# copies of figure and background under the marble floor, general blur
+# off the training path. Not judged: up-axis tilt, colour shift versus
+# other files. Cause of the off-centre start not proven.
+# smart_shd2: opened in Brush 0.3.0 on the Intel iGPU (Vulkan),
 # reported SH degree 2 / 182,489 splats, no load error; front and side
-# views clean, no holes noticed in the main body. Blur and streaks appear
-# only when the camera leaves the training path and were not compared
-# against the original under the same path, so they are not attributed to
-# pruning or SH truncation. Colour shift / flat shading versus the
-# original were NOT judged - that is why SH truncation stays off by
-# default. Every other file is untested (no verdict was given).
+# views clean, no holes noticed in the main body. Blur and streaks
+# appear only when the camera leaves the training path and were not
+# compared against the original under the same path, so they are not
+# attributed to pruning or SH truncation. Colour shift / flat shading
+# versus the original were NOT judged - that is why SH truncation stays
+# off by default. Every other file is untested (no verdict was given).
 BRUSH_LOAD_STATUS = {
-    "original": "n/a (Brush export)",
+    "original": ("opens ok; GPU: NVIDIA GeForce RTX 4060 Laptop GPU "
+                 "(DiscreteGpu, driver NVIDIA 581.86)"),
     "baseline_prune": "not tested",
     "smart_default": "not tested",
     "smart_shd2": "opens ok (no load error); GPU: Intel iGPU (Vulkan)",
@@ -74,7 +85,12 @@ BRUSH_LOAD_STATUS = {
 }
 
 NOTES = {
-    "original": "reference Brush export",
+    "original": ("reference Brush export; not centred at first view "
+                 "(small, lower right), subject tiny vs room background; "
+                 "needle/streak splats off the training path; fog/ghost "
+                 "splats near the floor; mirrored copies under the "
+                 "marble floor; blur off path; up-axis tilt and colour "
+                 "shift not judged; cause of off-centre start not proven"),
     "baseline_prune": "baseline opacity prune (threshold 0.05)",
     "smart_default": "smart prune, max_voxel_fraction 0.3, no emptied voxels",
     "smart_shd2": ("smart default, SH truncated to degree 2; opens in "

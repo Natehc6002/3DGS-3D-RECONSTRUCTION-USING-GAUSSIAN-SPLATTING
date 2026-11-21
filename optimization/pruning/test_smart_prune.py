@@ -222,6 +222,119 @@ class TestFlagsAndSelection(unittest.TestCase):
                 sp.REASON_ISOLATED, sp.REASON_SIZE])
 
 
+class TestNeedleCleanup(unittest.TestCase):
+    """Needle flag: scene-relative, identical criteria to analyze_scene."""
+
+    N_NORM = 100
+    N_NEEDLE = 3
+
+    def _scene(self):
+        rng = np.random.default_rng(11)
+        n = self.N_NORM + self.N_NEEDLE
+        v = make_vertex_array(n, seed=5, scrambled=True)
+        xyz = rng.uniform(10.0, 40.0, size=(n, 3))
+        # 10 normals share the needles' voxel [0, 10)^3 so the per-voxel
+        # budget (floor(0.3 * count) >= 3) can actually spend all needles
+        xyz[:10] = rng.uniform(2.0, 8.0, size=(10, 3))
+        xyz[self.N_NORM:] = [[5.0, 5.0, 5.0],
+                             [6.0, 6.0, 6.0],
+                             [7.0, 7.0, 7.0]]
+        for i, k in enumerate(("x", "y", "z")):
+            v[k] = xyz[:, i].astype("<f4")
+        # normal Gaussians: near-isotropic axes around exp(0)=1
+        for k in sp.SCALE_KEYS:
+            v[k][:self.N_NORM] = rng.normal(0.0, 0.3, self.N_NORM)
+        # needles: max axis 30, min axis 0.1 -> anisotropy 300
+        v["scale_0"][self.N_NORM:] = np.log(30.0)
+        v["scale_1"][self.N_NORM:] = np.log(0.1)
+        v["scale_2"][self.N_NORM:] = np.log(0.1)
+        return xyz, v
+
+    def _flags(self, xyz, v, needle_cleanup):
+        return sp.build_flags(xyz, v, knn_k=5, iso_percentile=99.0,
+                              size_percentile=99.9,
+                              body_percentile_low=0.5,
+                              body_percentile_high=99.5,
+                              body_margin=5.0,
+                              needle_cleanup=needle_cleanup)
+
+    def test_needles_flagged_when_enabled(self):
+        xyz, v = self._scene()
+        flags, thr = self._flags(xyz, v, True)
+        self.assertTrue(thr["needle_enabled"])
+        self.assertTrue(flags["needle"][self.N_NORM:].all())
+        self.assertGreaterEqual(thr["needle_aniso_threshold"],
+                                sp.NEEDLE_ANISO_RATIO)
+        self.assertGreater(thr["needle_size_threshold"], 0.0)
+
+    def test_disabled_by_default(self):
+        xyz, v = self._scene()
+        flags, thr = sp.build_flags(xyz, v, knn_k=5, iso_percentile=99.0,
+                                    size_percentile=99.9,
+                                    body_percentile_low=0.5,
+                                    body_percentile_high=99.5,
+                                    body_margin=5.0)
+        self.assertFalse(thr["needle_enabled"])
+        self.assertIsNone(thr["needle_aniso_threshold"])
+        self.assertFalse(flags["needle"].any())
+
+    def test_needle_only_exact_match(self):
+        xyz, v = self._scene()
+        flags, _ = self._flags(xyz, v, True)
+        # no near-isotropic normal may be mistaken for a needle
+        self.assertEqual(int(flags["needle"].sum()), self.N_NEEDLE)
+
+    def test_primary_reason_needle_beats_size(self):
+        flags = {"outside_body": np.array([False, False, False]),
+                 "isolated": np.array([False, False, True]),
+                 "size_outlier": np.array([True, True, True]),
+                 "needle": np.array([True, False, False])}
+        low = np.array([False, False, False])
+        r = sp.primary_reason(flags, low)
+        np.testing.assert_array_equal(
+            r, [sp.REASON_NEEDLE, sp.REASON_SIZE, sp.REASON_ISOLATED])
+
+    def test_prune_with_needle_cleanup_reports_counts(self):
+        xyz, v = self._scene()
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td) / "in.ply"
+            dst = Path(td) / "out.ply"
+            PlyData([PlyElement.describe(v, "vertex")],
+                    text=False, byte_order="<",
+                    comments=["Brush export test"]).write(str(src))
+            opts = {"max_fraction": 0.3, "voxel_size": 10.0,
+                    "importance_threshold": 1e-4, "knn_k": 5,
+                    "iso_percentile": 99.0, "size_percentile": 99.9,
+                    "body_low": 0.5, "body_high": 99.5, "body_margin": 5.0,
+                    "singleton": False, "needle": True}
+            info = sp.prune(src, dst, opts)
+        self.assertEqual(info["flagged_counts"]["needle"], self.N_NEEDLE)
+        self.assertTrue(info["thresholds"]["needle_enabled"])
+        removed = info["removed_by_reason"]["needle"]
+        blocked = info["blocked_by_safety"]["needle"]
+        self.assertGreaterEqual(removed, 1)       # voxel budget allows >= 1
+        self.assertEqual(removed + blocked, self.N_NEEDLE)
+        self.assertEqual(info["voxels_emptied"], 0)
+
+    def test_prune_without_needle_key_still_works(self):
+        # pipeline.py builds prune_opts without "needle" (Task 5 wires it);
+        # the key must stay optional.
+        xyz, v = self._scene()
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td) / "in.ply"
+            dst = Path(td) / "out.ply"
+            PlyData([PlyElement.describe(v, "vertex")],
+                    text=False, byte_order="<").write(str(src))
+            opts = {"max_fraction": 0.3, "voxel_size": 10.0,
+                    "importance_threshold": 1e-4, "knn_k": 5,
+                    "iso_percentile": 99.0, "size_percentile": 99.9,
+                    "body_low": 0.5, "body_high": 99.5, "body_margin": 5.0,
+                    "singleton": False}
+            info = sp.prune(src, dst, opts)
+        self.assertFalse(info["thresholds"]["needle_enabled"])
+        self.assertEqual(info["flagged_counts"]["needle"], 0)
+
+
 class TestOutputFormat(unittest.TestCase):
     def test_output_preserves_property_order_and_comments(self):
         v = make_vertex_array(50, seed=7, scrambled=True)

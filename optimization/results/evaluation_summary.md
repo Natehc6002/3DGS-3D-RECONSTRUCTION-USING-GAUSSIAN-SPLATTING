@@ -1,12 +1,12 @@
 # Optimization evaluation
 
-- Generated: 2026-11-21T12:44:48+00:00
+- Generated: 2026-11-21T13:38:28+00:00
 - Original: `projects\figure_01\scenes\original\figure_30k_30000.ply`
 - Quality metrics (PSNR, SSIM, FPS) are not measured anywhere in this repository yet.
 
 | variant | gaussians | size (MB) | ratio | time (s) | coverage proxy (voxels) | Route B round-trip max abs diff | Brush load | PSNR | SSIM | FPS |
 |---|---|---|---|---|---|---|---|---|---|---|
-| original | 258309 | 60.96 | 1.000 | n/a | n/a (no removals) | n/a | n/a (Brush export) | not measured | not measured | not measured |
+| original | 258309 | 60.96 | 1.000 | n/a | n/a (no removals) | n/a | opens ok; GPU: NVIDIA GeForce RTX 4060 Laptop GPU (DiscreteGpu, driver NVIDIA 581.86) | not measured | not measured | not measured |
 | baseline_prune | 178344 | 42.09 | 1.448 | 0.3 | voxels emptied 610; over 50% loss 910; max loss 1.000 | n/a | not tested | not measured | not measured | not measured |
 | smart_default | 182489 | 43.07 | 1.415 | 1.1 | voxels emptied 0; over 50% loss 0; max loss 0.300 | n/a | not tested | not measured | not measured | not measured |
 | smart_shd2 | 182489 | 27.74 | 2.198 | 13.1 | n/a (layout differs from original) | n/a | opens ok (no load error); GPU: Intel iGPU (Vulkan) | not measured | not measured | not measured |
