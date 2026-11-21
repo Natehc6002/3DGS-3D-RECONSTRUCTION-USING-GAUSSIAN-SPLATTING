@@ -53,18 +53,21 @@ COLUMNS = (
 )
 
 # Manual Brush verdicts - update ONLY after a visual check in Brush.
-# Anything not verified must stay "not tested".
-# smart_shd2: opened in Brush 0.3.0 (Vulkan, Intel iGPU - see
-# tools/README_brush_gpu.md), reported SH degree 2 / 182,489 splats, no
-# load error. Blur/streaks off the training path were not compared
-# against the original under the same camera path, so they are not
-# attributed to pruning or SH truncation; colour shift / flat shading
-# were not judged. Everything else is untested.
+# Anything not verified must stay "not tested"; each tested entry also
+# records the GPU it was viewed on (see tools/README_brush_gpu.md).
+# smart_shd2: opened in Brush 0.3.0 on the Intel iGPU (Vulkan backend),
+# reported SH degree 2 / 182,489 splats, no load error; front and side
+# views clean, no holes noticed in the main body. Blur and streaks appear
+# only when the camera leaves the training path and were not compared
+# against the original under the same path, so they are not attributed to
+# pruning or SH truncation. Colour shift / flat shading versus the
+# original were NOT judged - that is why SH truncation stays off by
+# default. Every other file is untested (no verdict was given).
 BRUSH_LOAD_STATUS = {
     "original": "n/a (Brush export)",
     "baseline_prune": "not tested",
     "smart_default": "not tested",
-    "smart_shd2": "opens ok (no load error)",
+    "smart_shd2": "opens ok (no load error); GPU: Intel iGPU (Vulkan)",
     "smart_shd1": "not tested",
     "smart_shd0": "not tested",
     "route_b_decoded": "not tested",
@@ -75,8 +78,11 @@ NOTES = {
     "baseline_prune": "baseline opacity prune (threshold 0.05)",
     "smart_default": "smart prune, max_voxel_fraction 0.3, no emptied voxels",
     "smart_shd2": ("smart default, SH truncated to degree 2; opens in "
-                   "Brush 0.3.0 (SH degree 2, 182,489 splats), visual "
-                   "comparison against original pending"),
+                   "Brush 0.3.0 (SH degree 2, 182,489 splats) on the "
+                   "Intel iGPU, front/side views clean, no holes noticed "
+                   "in the main body; blur/streaks only off the training "
+                   "path (not compared against original); colour shift / "
+                   "flat shading not judged"),
     "smart_shd1": "smart default, SH truncated to degree 1",
     "smart_shd0": "smart default, SH truncated to degree 0 (no view-dependent colour)",
     "route_b_decoded": "smart default quantized to .npz, decoded back to PLY",
