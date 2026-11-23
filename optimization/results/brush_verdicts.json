@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "verdicts": {
+    "original": {
+      "status": "opens ok",
+      "gpu": "NVIDIA GeForce RTX 4060 Laptop GPU (DiscreteGpu, driver NVIDIA 581.86)",
+      "detail": "Brush 0.3.0 via the launcher (-Gpu auto), Splats 258309, SH degree 3, 60.96 MB; figure not centred at first view (small, lower right, camera faces the room); needle streaks off the training path; fog near the floor; mirrored copies of the figure and background under the marble floor; blur off the training path; not judged: up-axis tilt, colour shift"
+    },
+    "smart_shd2": {
+      "status": "opens ok (no load error)",
+      "gpu": "Intel iGPU (Vulkan)",
+      "detail": "Brush 0.3.0, SH degree 2, 182489 splats; front and side views clean, no holes noticed in the main body; blur and streaks only off the training path (not compared against the original); colour shift / flat shading not judged"
+    },
+    "baseline_prune": "not tested",
+    "smart_default": "not tested",
+    "smart_shd1": "not tested",
+    "smart_shd0": "not tested",
+    "route_b_decoded": "not tested",
+    "N1": "not tested",
+    "N2": "not tested",
+    "N3": "not tested",
+    "N4": "not tested",
+    "centring": "not tested"
+  }
+}
