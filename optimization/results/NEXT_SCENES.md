@@ -56,6 +56,14 @@ python -m optimization.pipeline --input <in.ply> --output-dir <dir> --sh-degree 
 
 # Route B: storage-only .npz archive (decoded PLY is what Brush opens)
 python -m optimization.pipeline --input <in.ply> --output-dir <dir> --route-b
+
+# Mirror clip and/or normalise (both off by default; see the Brush
+# checklist below before treating their outputs as verified)
+python -m optimization.pipeline --input <in.ply> --output-dir <dir> --mirror-clip
+python -m optimization.pipeline --input <in.ply> --output-dir <dir> --normalize
+# clip + normalise in one chain (writes <stem>_smart.ply,
+# <stem>_smart_clip.ply, <stem>_smart_clip_norm.ply + sidecar)
+python -m optimization.pipeline --input <in.ply> --output-dir <dir> --mirror-clip --normalize
 ```
 
 Record from the report (`results/<scene>_pipeline.json`): input/output
@@ -93,6 +101,14 @@ Open the original too, for the side-by-side comparison:
 .\optimization\tools\open_in_brush.ps1 -Ply projects\<scene>\scenes\original\<scene>.ply
 ```
 
+If you ran `--mirror-clip` and/or `--normalize`, do the A-D variant
+comparison for this scene too - exact procedure, launcher commands and
+the decision rule for flipping the stage defaults are in
+`optimization/results/BRUSH_CHECKLIST.md` (worked example:
+`projects/figure_01/scenes/normalize_test/`). Record each variant's
+verdict separately; a stage default flips only after its variant
+carries an `opens ok` verdict.
+
 ## 4. Build the evaluation table
 
 ```powershell
@@ -101,8 +117,15 @@ python -m optimization.evaluate `
     --variant smart_default=projects\<scene>\scenes\optimized\<scene>_smart.ply `
     --time smart_default=<seconds from the pipeline report> `
     [--variant baseline_prune=<path> --time baseline_prune=<s>] `
-    [--round-trip route_b_decoded=<smart.ply>,<q_back.ply>]
+    [--round-trip route_b_decoded=<smart.ply>,<q_back.ply>] `
+    [--report smart_default=projects\<scene>\results\<scene>_pipeline.json]
 ```
+
+`--report` fills the new-stage columns (needles removed, clip removed
+and weight share, normalize centre/up/scale method+confidence,
+normalize round-trip relative error) from that real run report;
+without it they read `not measured`, a stage that did not run reads
+`n/a (stage off)`.
 
 Fill `BRUSH_LOAD_STATUS` in `optimization/evaluate.py` **only** with
 verdicts from step 3 for this scene's files, then rerun the command so
@@ -115,6 +138,10 @@ computes them.
 - Scene name, Gaussian count, input size (MB), SH degree.
 - Pipeline: pruned count/size/ratio, coverage (emptied voxels, >=50%
   loss voxels, max loss), stage times, exit code.
+- If clip/normalize ran: removed count and weight share, plane
+  confidence and whether the normal was flipped; normalize centre/scale
+  methods with confidence and the sidecar round-trip relative error
+  (all straight from the report - never retyped by hand).
 - Brush: GPU name + type from the Stats panel, load result, splat count
   reported, colour shift, flat shading, holes, floaters - each item
   separately, `not tested` when skipped.
@@ -127,7 +154,9 @@ computes them.
 
 - Do not commit `*.ply`, `*.npz`, `projects/`, `*.db`, `*.log` - results
   that belong in Git go in small CSV/JSON/MD files under
-  `optimization/results/`.
+  `optimization/results/`. This includes the local A-D comparison notes
+  under `projects/<scene>/scenes/normalize_test/`: they are working
+  files; the durable record is `optimization/results/BRUSH_CHECKLIST.md`.
 - Do not run `set_brush_gpu_preference.ps1 -Apply` from a script; it is
   a manual, user-authorized step (and you must restart Brush after it).
 - Do not overwrite an existing run - use a fresh `--output-dir`.
