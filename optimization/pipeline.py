@@ -3,9 +3,17 @@
 Stages (in order):
     inspect        -> read the input, report counts/properties/SH degree
     smart_prune    -> spatially safe pruning (voxel budget, floater flags)
+    mirror_clip    -> optional: clip content below the dominant plane
     sh_truncate    -> optional Route A: SH degree truncation of the pruned PLY
+    normalize      -> optional: centre + scale (+ optional upright rotation)
+                      with a sidecar JSON; runs last so every earlier
+                      stage keeps working in the input's own units
     route_b        -> optional Route B: uint8/uint16 .npz archive + decode check
     report         -> write <name>_pipeline.json and append one CSV row
+
+Every stage after inspect is opt-in or follows the documented defaults
+(smart prune on; mirror clip, SH truncation, normalisation and Route B
+off), so a default run produces the same files as before this stage list.
 
 The input PLY is never modified and existing outputs are never overwritten.
 
@@ -21,8 +29,9 @@ Usage:
         [--importance-threshold 1e-4] [--knn-k 5] [--iso-percentile 99]
         [--size-percentile 99.9] [--body-percentile-low 0.5]
         [--body-percentile-high 99.5] [--body-margin 20]
-        [--remove-singleton-floaters]
+        [--remove-singleton-floaters] [--needle-cleanup] [--mirror-clip]
         [--sh-degree {0,1,2,3}] [--route-b] [--no-coverage]
+        [--normalize] [--upright] [--up-axis X Y Z] [--no-normalize-scale]
         [--report-name NAME.json] [--quiet]
 
 Library use (the desktop app calls this):
@@ -47,8 +56,10 @@ from pathlib import Path
 import numpy as np
 from plyfile import PlyData
 
-from optimization import inspect_ply
+from optimization import analyze_scene, inspect_ply
+from optimization.normalize import normalize as normalize_cli
 from optimization.pruning import coverage_check, smart_prune
+from optimization.pruning import mirror_clip as mirror_clip_mod
 from optimization.quantize import core as route_b_core
 from optimization.quantize import sh_truncate
 
@@ -57,9 +68,9 @@ CSV_NAME = "pipeline_runs.csv"
 CSV_COLUMNS = (
     "generated_at", "status", "input", "project",
     "gaussians_in", "gaussians_out", "size_in_bytes", "size_out_bytes",
-    "ratio", "prune", "sh_degree", "route_b",
-    "prune_s", "sh_truncate_s", "route_b_s", "total_s",
-    "error", "report",
+    "ratio", "prune", "mirror_clip", "sh_degree", "normalize", "route_b",
+    "prune_s", "mirror_clip_s", "sh_truncate_s", "normalize_s", "route_b_s",
+    "total_s", "error", "report",
 )
 
 # Defaults follow the Brush verdicts only: smart pruning is on (voxel
@@ -106,7 +117,10 @@ def _jsonable(obj):
     return obj
 
 
-def _validate_options(prune, sh_degree, route_b, coverage, opts, extra):
+def _validate_options(prune, sh_degree, route_b, coverage, opts, extra,
+                      normalize=False, upright=False, up_axis=None,
+                      no_scale=False, needle_cleanup=False,
+                      mirror_clip=False):
     unknown = set(extra) - set(DEFAULTS)
     if unknown:
         raise ValueError(f"unknown option(s): {sorted(unknown)}")
@@ -127,9 +141,16 @@ def _validate_options(prune, sh_degree, route_b, coverage, opts, extra):
         raise ValueError("body percentiles must satisfy 0 <= low < high <= 100")
     if opts["body_margin"] < 0:
         raise ValueError("body_margin must be >= 0")
-    for flag in (prune, route_b, coverage):
+    for flag in (prune, route_b, coverage, normalize, upright, no_scale,
+                 needle_cleanup, mirror_clip):
         if not isinstance(flag, bool):
-            raise ValueError("prune, route_b and coverage must be bool")
+            raise ValueError("stage flags must be bool")
+    if not normalize and (upright or up_axis is not None or no_scale):
+        raise ValueError(
+            "--upright/--up-axis/--no-normalize-scale require --normalize")
+    if up_axis is not None:
+        if len(up_axis) != 3 or float(np.linalg.norm(up_axis)) <= 0:
+            raise ValueError("up_axis must be a non-zero 3-vector")
 
 
 def _timings_from_stages(stages, total_s):
@@ -147,8 +168,14 @@ def run_pipeline(input_ply, output_dir, *,
                  report_name=None,
                  quiet=False,
                  singleton_floaters=False,
+                 needle_cleanup=False,
+                 mirror_clip=False,
+                 normalize=False,
+                 upright=False,
+                 up_axis=None,
+                 no_scale=False,
                  **kwargs):
-    """Run inspect -> smart prune -> SH truncation -> Route B -> report.
+    """Run inspect -> smart prune -> clip -> SH -> normalise -> Route B.
 
     Returns a plain dict (JSON-serializable, schema_version 1) that is also
     written as the report file on every run where at least one stage ran:
@@ -164,16 +191,20 @@ def run_pipeline(input_ply, output_dir, *,
         stages        [{name, status: ok|skipped|error, time_s, error, ...}]
         inspect       full inspect_ply report of the input
         smart_prune   smart_prune removal report (when the stage ran)
+        mirror_clip   mirror_clip plan (when the stage ran)
         coverage      coverage_check proxy (when computed)
         sh_truncate   sh_truncate info (when the stage ran)
+        normalize     {plan, sidecar, roundtrip, relative, sidecar_path}
+                      (when the stage ran)
         route_b       {npz, source_ply, q_back_ply, encode_*,
                        dequantize_check}
-        counts        {input, pruned, output}
+        counts        {input, pruned, clipped, output}
         sizes         {input_bytes, pruned_bytes, final_bytes, npz_bytes,
                        q_back_bytes} (entries that do not apply are None)
         ratios        {pruned_vs_input, final_vs_input, npz_vs_input}
         timings       {total_s, <stage>: s, ...}
-        outputs       {pruned_ply, sh_ply, final_ply, npz, q_back_ply,
+        outputs       {pruned_ply, clipped_ply, sh_ply, normalized_ply,
+                       normalize_sidecar, final_ply, npz, q_back_ply,
                        report_json, csv_log}
         warnings      [str]
         generated_at  UTC ISO timestamp
@@ -188,6 +219,7 @@ def run_pipeline(input_ply, output_dir, *,
     outdir = Path(output_dir)
     opts = {k: kwargs.get(k, DEFAULTS[k]) for k in DEFAULTS}
     opts["singleton"] = bool(singleton_floaters)
+    opts["needle"] = bool(needle_cleanup)
 
     result = {
         "schema_version": SCHEMA_VERSION,
@@ -204,16 +236,21 @@ def run_pipeline(input_ply, output_dir, *,
         "stages": [],
         "inspect": None,
         "smart_prune": None,
+        "mirror_clip": None,
         "coverage": None,
         "sh_truncate": None,
+        "normalize": None,
         "route_b": None,
-        "counts": {"input": None, "pruned": None, "output": None},
+        "counts": {"input": None, "pruned": None, "clipped": None,
+                   "output": None},
         "sizes": {"input_bytes": None, "pruned_bytes": None,
                   "final_bytes": None, "npz_bytes": None,
                   "q_back_bytes": None},
         "ratios": {},
         "timings": {},
-        "outputs": {"pruned_ply": None, "sh_ply": None, "final_ply": None,
+        "outputs": {"pruned_ply": None, "clipped_ply": None, "sh_ply": None,
+                    "normalized_ply": None, "normalize_sidecar": None,
+                    "final_ply": None,
                     "npz": None, "q_back_ply": None, "report_json": None,
                     "csv_log": None},
         "warnings": [],
@@ -231,7 +268,11 @@ def run_pipeline(input_ply, output_dir, *,
 
     # ---------------- preflight (nothing written) ----------------
     try:
-        _validate_options(prune, sh_degree, route_b, coverage, opts, kwargs)
+        _validate_options(prune, sh_degree, route_b, coverage, opts, kwargs,
+                          normalize=normalize, upright=upright,
+                          up_axis=up_axis, no_scale=no_scale,
+                          needle_cleanup=needle_cleanup,
+                          mirror_clip=mirror_clip)
     except ValueError as e:
         return _finish("bad_input", str(e), 2)
     if not src.is_file():
@@ -245,15 +286,21 @@ def run_pipeline(input_ply, output_dir, *,
     result["project"] = str(outdir) if is_project else None
 
     stem = src.stem
-    base_stem = f"{stem}_smart" if prune else stem
-    sh_stem = f"{base_stem}_shd{sh_degree}" if sh_degree is not None else base_stem
+    prune_stem = f"{stem}_smart" if prune else stem
+    clip_stem = f"{prune_stem}_clip" if mirror_clip else prune_stem
+    sh_stem = f"{clip_stem}_shd{sh_degree}" if sh_degree is not None else clip_stem
     report_path = results_dir / (report_name or f"{stem}_pipeline.json")
     csv_path = results_dir / CSV_NAME
     result["outputs"]["report_json"] = str(report_path)
     result["outputs"]["csv_log"] = str(csv_path)
 
-    pruned_path = scenes_dir / f"{base_stem}.ply" if prune else None
+    pruned_path = scenes_dir / f"{prune_stem}.ply" if prune else None
+    clip_path = scenes_dir / f"{clip_stem}.ply" if mirror_clip else None
     sh_path = scenes_dir / f"{sh_stem}.ply" if sh_degree is not None else None
+    # norm_path/sidecar_path depend on the final stem, which is known only
+    # after inspect (the SH stage may be skipped); both stay None until then.
+    norm_path = None
+    sidecar_path = None
     npz_path = None
     qback_path = None
 
@@ -268,7 +315,7 @@ def run_pipeline(input_ply, output_dir, *,
                     + ", ".join(existing), 2)
         return None
 
-    problem = _check_paths([pruned_path, report_path])
+    problem = _check_paths([pruned_path, clip_path, report_path])
     if problem:
         return _finish(*problem)
 
@@ -328,17 +375,25 @@ def run_pipeline(input_ply, output_dir, *,
         result["counts"]["input"] = info["gaussian_count"]
         result["sizes"]["input_bytes"] = info["size_bytes"]
         in_deg = info["sh_degree_from_props"]
+        last_count = info["gaussian_count"]
 
         # Phase 2 path check: the SH stage is skipped when the target degree
         # equals the input degree, so final names are known only now (still
         # before anything is written).
         sh_will_run = sh_degree is not None and not (
             in_deg is not None and sh_degree == in_deg)
-        final_stem = sh_stem if sh_will_run else base_stem
+        final_stem = sh_stem if sh_will_run else clip_stem
+        if normalize:
+            norm_path = scenes_dir / f"{final_stem}_norm.ply"
+            sidecar_path = normalize_cli.default_sidecar_path(norm_path)
         if route_b:
-            npz_path = scenes_dir / f"{final_stem}.npz"
-            qback_path = scenes_dir / f"{final_stem}_qback.ply"
+            # Route B encodes the final PLY, so its names follow the norm
+            # stem when normalisation is on.
+            rb_stem = f"{final_stem}_norm" if normalize else final_stem
+            npz_path = scenes_dir / f"{rb_stem}.npz"
+            qback_path = scenes_dir / f"{rb_stem}_qback.ply"
         problem = _check_paths([sh_path if sh_will_run else None,
+                                norm_path, sidecar_path,
                                 npz_path, qback_path])
         if problem:
             return _finish(*problem)
@@ -360,6 +415,7 @@ def run_pipeline(input_ply, output_dir, *,
                 "body_high": opts["body_percentile_high"],
                 "body_margin": opts["body_margin"],
                 "singleton": opts["singleton"],
+                "needle": opts["needle"],
             }
 
             def do_prune():
@@ -381,6 +437,27 @@ def run_pipeline(input_ply, output_dir, *,
             result["counts"]["pruned"] = prune_info["pruned_count"]
             result["sizes"]["pruned_bytes"] = pruned_path.stat().st_size
             pruned_src = pruned_path
+            last_count = prune_info["pruned_count"]
+
+        # ---- mirror clip ----
+        if not mirror_clip:
+            _run_stage("mirror_clip", None, skip_reason="not requested")
+            clip_src = pruned_src
+        else:
+            def do_clip():
+                rep = analyze_scene.analyze(str(pruned_src))
+                scene = analyze_scene.load_scene(str(pruned_src))
+                plan = mirror_clip_mod.build_plan(rep, scene)
+                mirror_clip_mod.write_clipped(pruned_src, clip_path, plan)
+                plan.pop("remove", None)
+                return plan
+
+            clip_plan = _run_stage("mirror_clip", do_clip)
+            result["mirror_clip"] = clip_plan
+            result["counts"]["clipped"] = clip_plan["kept_count"]
+            result["outputs"]["clipped_ply"] = str(clip_path)
+            clip_src = clip_path
+            last_count = clip_plan["kept_count"]
 
         # ---- SH truncation ----
         if sh_degree is None:
@@ -394,13 +471,39 @@ def run_pipeline(input_ply, output_dir, *,
         else:
             sh_info = _run_stage(
                 "sh_truncate",
-                lambda: sh_truncate.truncate(pruned_src, sh_path, sh_degree))
+                lambda: sh_truncate.truncate(clip_src, sh_path, sh_degree))
             result["sh_truncate"] = sh_info
             sh_out = sh_path
+            last_count = sh_info["gaussians"]
+
+        # ---- normalisation (last coordinate change; sidecar for undo) ----
+        if not normalize:
+            _run_stage("normalize", None, skip_reason="not requested")
+            norm_out = None
+        else:
+            norm_src = sh_out if sh_out is not None else clip_src
+
+            def do_normalize():
+                outcome = normalize_cli.normalize_file(
+                    str(norm_src), str(norm_path), str(sidecar_path),
+                    upright=upright, up_axis=up_axis, no_scale=no_scale)
+                outcome["source"] = str(norm_src)
+                outcome["sidecar_path"] = str(sidecar_path)
+                for w in outcome["plan"].get("warnings", []):
+                    warnings.append(f"normalize: {w}")
+                return outcome
+
+            norm_outcome = _run_stage("normalize", do_normalize)
+            result["normalize"] = norm_outcome
+            result["outputs"]["normalized_ply"] = str(norm_path)
+            result["outputs"]["normalize_sidecar"] = str(sidecar_path)
+            norm_out = norm_path
 
         # ---- final PLY bookkeeping ----
-        if prune or sh_out is not None:
-            final_ply = sh_out if sh_out is not None else pruned_path
+        final_ply = (norm_out or sh_out
+                     or (clip_path if mirror_clip else None)
+                     or pruned_path)
+        if final_ply is not None:
             result["outputs"]["pruned_ply"] = (str(pruned_path)
                                                if pruned_path else None)
             result["outputs"]["sh_ply"] = str(sh_out) if sh_out else None
@@ -409,12 +512,8 @@ def run_pipeline(input_ply, output_dir, *,
                 result["sizes"]["final_bytes"] = result["sizes"]["pruned_bytes"]
             else:
                 result["sizes"]["final_bytes"] = final_ply.stat().st_size
-            if sh_out is not None:
-                result["counts"]["output"] = sh_info["gaussians"]
-            else:
-                result["counts"]["output"] = result["counts"]["pruned"]
+            result["counts"]["output"] = last_count
         else:
-            final_ply = None
             result["counts"]["output"] = result["counts"]["input"]
 
         # ---- Route B ----
@@ -486,7 +585,8 @@ def run_pipeline(input_ply, output_dir, *,
             stages, time.perf_counter() - t_start)
         result = _jsonable(result)
     except _StageFailure as e:
-        for p in (pruned_path, sh_path, npz_path, qback_path):
+        for p in (pruned_path, clip_path, sh_path, norm_path, sidecar_path,
+                  npz_path, qback_path):
             try:
                 if p is not None and p.exists():
                     p.unlink()
@@ -540,13 +640,23 @@ def _append_csv(csv_path, result):
         "prune": "yes" if any(s["name"] == "smart_prune"
                               and s["status"] == "ok"
                               for s in result["stages"]) else "no",
+        "mirror_clip": "yes" if any(s["name"] == "mirror_clip"
+                                    and s["status"] == "ok"
+                                    for s in result["stages"]) else "no",
         "sh_degree": (result["sh_truncate"]["degree_out"]
                       if result.get("sh_truncate") else ""),
+        "normalize": "yes" if any(s["name"] == "normalize"
+                                  and s["status"] == "ok"
+                                  for s in result["stages"]) else "no",
         "route_b": "yes" if result.get("route_b") else "no",
         "prune_s": next((s["time_s"] for s in result["stages"]
                          if s["name"] == "smart_prune"), ""),
+        "mirror_clip_s": next((s["time_s"] for s in result["stages"]
+                               if s["name"] == "mirror_clip"), ""),
         "sh_truncate_s": next((s["time_s"] for s in result["stages"]
                                if s["name"] == "sh_truncate"), ""),
+        "normalize_s": next((s["time_s"] for s in result["stages"]
+                             if s["name"] == "normalize"), ""),
         "route_b_s": next((s["time_s"] for s in result["stages"]
                            if s["name"] == "route_b"), ""),
         "total_s": result["timings"].get("total_s", ""),
@@ -584,7 +694,8 @@ def _print_summary(result):
     for key in ("pruned_vs_input", "final_vs_input", "npz_vs_input"):
         if key in result["ratios"]:
             print(f"Ratio {key}: {result['ratios'][key]:.3f}x")
-    for key in ("pruned_ply", "final_ply", "npz", "q_back_ply",
+    for key in ("pruned_ply", "clipped_ply", "sh_ply", "normalized_ply",
+                "normalize_sidecar", "final_ply", "npz", "q_back_ply",
                 "report_json", "csv_log"):
         path = result["outputs"].get(key)
         if path:
@@ -597,7 +708,8 @@ def _print_summary(result):
 def main(argv=None):
     ap = argparse.ArgumentParser(
         description="Gaussian optimization pipeline "
-                    "(inspect -> smart prune -> SH -> Route B -> report)")
+                    "(inspect -> smart prune -> clip -> SH -> "
+                    "normalise -> Route B -> report)")
     ap.add_argument("--input", required=True, help="original PLY (never modified)")
     ap.add_argument("--output-dir", required=True,
                     help="output folder, or a 3DGS Studio project root "
@@ -629,6 +741,13 @@ def main(argv=None):
     ap.add_argument("--remove-singleton-floaters", action="store_true",
                     help="EXCEPTION: allow emptying a voxel that holds a "
                          "lone floater (default off)")
+    ap.add_argument("--needle-cleanup", action="store_true",
+                    help="also flag and remove needle Gaussians during "
+                         "pruning (scene-relative criteria; default off)")
+    ap.add_argument("--mirror-clip", action="store_true",
+                    help="clip content below the dominant plane (candidate "
+                         "mirror geometry); refuses when the plane or the "
+                         "subject side looks wrong (default off)")
     ap.add_argument("--sh-degree", type=int, choices=(0, 1, 2, 3),
                     default=None,
                     help="Route A: truncate SH to this degree after pruning "
@@ -638,6 +757,19 @@ def main(argv=None):
                          "q_back PLY and check the round trip (default off)")
     ap.add_argument("--no-coverage", action="store_true",
                     help="skip the voxel coverage proxy after pruning")
+    ap.add_argument("--normalize", action="store_true",
+                    help="centre the subject and scale to unit radius after "
+                         "all other stages, writing a sidecar JSON for undo "
+                         "(default off)")
+    ap.add_argument("--upright", action="store_true",
+                    help="with --normalize: rotate the estimated up "
+                         "direction to Brush +y")
+    ap.add_argument("--up-axis", type=float, nargs=3,
+                    metavar=("X", "Y", "Z"),
+                    help="with --normalize: manual up direction "
+                         "(overrides --upright evidence)")
+    ap.add_argument("--no-normalize-scale", action="store_true",
+                    help="with --normalize: keep input units (centre only)")
     ap.add_argument("--report-name",
                     help="report file name (default <input stem>_pipeline.json)")
     ap.add_argument("--quiet", action="store_true",
@@ -653,6 +785,12 @@ def main(argv=None):
         report_name=a.report_name,
         quiet=a.quiet,
         singleton_floaters=a.remove_singleton_floaters,
+        needle_cleanup=a.needle_cleanup,
+        mirror_clip=a.mirror_clip,
+        normalize=a.normalize,
+        upright=a.upright,
+        up_axis=a.up_axis,
+        no_scale=a.no_normalize_scale,
         max_voxel_fraction=a.max_voxel_fraction,
         voxel_size=a.voxel_size,
         importance_threshold=a.importance_threshold,

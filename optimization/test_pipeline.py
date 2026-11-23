@@ -100,9 +100,14 @@ class TestPipelineRun(PipelineTestCase):
 
         stages = {s["name"]: s["status"] for s in res["stages"]}
         self.assertEqual(list(stages),
-                         ["inspect", "smart_prune", "sh_truncate",
-                          "route_b", "report"])
-        self.assertTrue(all(v == "ok" for v in stages.values()), stages)
+                         ["inspect", "smart_prune", "mirror_clip",
+                          "sh_truncate", "normalize", "route_b", "report"])
+        # every requested stage ran; the opt-in stages are skipped by default
+        for name, status in stages.items():
+            if name in ("mirror_clip", "normalize"):
+                self.assertEqual(status, "skipped", stages)
+            else:
+                self.assertEqual(status, "ok", stages)
         for s in res["stages"]:
             self.assertGreaterEqual(s["time_s"], 0.0)
 
@@ -156,21 +161,23 @@ class TestPipelineRun(PipelineTestCase):
         self.assertEqual(rows[0]["status"], "ok")
         self.assertEqual(rows[0]["sh_degree"], "1")
         self.assertEqual(rows[0]["route_b"], "yes")
+        self.assertEqual(rows[0]["normalize"], "no")
+        self.assertEqual(rows[0]["mirror_clip"], "no")
 
     def test_schema_is_stable(self):
         res = run_pipeline(self.src, self.dir, quiet=True)
         expected = {
             "schema_version", "generated_at", "status", "error",
             "error_kind", "error_stage", "exit_code", "input", "project",
-            "output_dir", "stages", "inspect", "smart_prune", "coverage",
-            "sh_truncate", "route_b", "counts", "sizes", "ratios",
-            "timings", "outputs", "warnings",
+            "output_dir", "stages", "inspect", "smart_prune", "mirror_clip",
+            "coverage", "sh_truncate", "normalize", "route_b", "counts",
+            "sizes", "ratios", "timings", "outputs", "warnings",
         }
         self.assertEqual(set(res), expected)
         self.assertEqual(res["schema_version"], 1)
         self.assertIn("total_s", res["timings"])
-        for stage in ("inspect", "smart_prune", "sh_truncate", "route_b",
-                      "report"):
+        for stage in ("inspect", "smart_prune", "mirror_clip", "sh_truncate",
+                      "normalize", "route_b", "report"):
             self.assertIn(stage, res["timings"])
         # no numpy types leak through
         json.dumps(res)
