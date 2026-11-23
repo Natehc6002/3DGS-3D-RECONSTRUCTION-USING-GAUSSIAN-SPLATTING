@@ -73,14 +73,33 @@ CSV_COLUMNS = (
     "total_s", "error", "report",
 )
 
-# Defaults follow the Brush verdicts only: smart pruning is on (voxel
-# safety invariant measured - 0 voxels emptied vs baseline 610); SH
-# truncation is off because no verdict reports no visible colour or
-# shading loss versus the original (smart_shd2 opened ok but colour
-# shift / flat shading were not judged, shd1/shd0 are "not tested"),
-# so it stays an optional export; Route B is off because it is
-# storage-only (Brush cannot read .npz) and its decoded PLY is
-# "not tested".
+# Stage defaults live in ONE block: run_pipeline's signature and the
+# CLI (main) both read this dict, so flipping a value here changes the
+# default for every future run. Nothing here changes without a verdict:
+# smart prune is on (voxel safety invariant measured - 0 voxels emptied
+# vs baseline 610); SH truncation is off because no verdict reports no
+# visible colour or shading loss versus the original (smart_shd2 opened
+# ok but colour shift / flat shading were not judged, shd1/shd0 are
+# "not tested"); Route B is off because it is storage-only (Brush cannot
+# read .npz) and its decoded PLY is "not tested"; needle cleanup, mirror
+# clip and normalisation are off until their outputs are confirmed in
+# Brush (flip "normalize" here only after that check).
+STAGE_DEFAULTS = {
+    "prune": True,
+    "sh_degree": None,
+    "route_b": False,
+    "coverage": True,
+    "singleton_floaters": False,
+    "needle_cleanup": False,
+    "mirror_clip": False,
+    "normalize": False,
+    "upright": False,
+    "up_axis": None,
+    "no_scale": False,
+}
+
+# Numeric tuning knobs (scene-relative thresholds live inside the
+# stages themselves; these are the only absolute numbers).
 DEFAULTS = {
     "max_voxel_fraction": 0.3,
     "voxel_size": 5.0,
@@ -161,19 +180,19 @@ def _timings_from_stages(stages, total_s):
 
 
 def run_pipeline(input_ply, output_dir, *,
-                 prune=True,
-                 sh_degree=None,
-                 route_b=False,
-                 coverage=True,
+                 prune=STAGE_DEFAULTS["prune"],
+                 sh_degree=STAGE_DEFAULTS["sh_degree"],
+                 route_b=STAGE_DEFAULTS["route_b"],
+                 coverage=STAGE_DEFAULTS["coverage"],
                  report_name=None,
                  quiet=False,
-                 singleton_floaters=False,
-                 needle_cleanup=False,
-                 mirror_clip=False,
-                 normalize=False,
-                 upright=False,
-                 up_axis=None,
-                 no_scale=False,
+                 singleton_floaters=STAGE_DEFAULTS["singleton_floaters"],
+                 needle_cleanup=STAGE_DEFAULTS["needle_cleanup"],
+                 mirror_clip=STAGE_DEFAULTS["mirror_clip"],
+                 normalize=STAGE_DEFAULTS["normalize"],
+                 upright=STAGE_DEFAULTS["upright"],
+                 up_axis=STAGE_DEFAULTS["up_axis"],
+                 no_scale=STAGE_DEFAULTS["no_scale"],
                  **kwargs):
     """Run inspect -> smart prune -> clip -> SH -> normalise -> Route B.
 
@@ -198,10 +217,14 @@ def run_pipeline(input_ply, output_dir, *,
                       (when the stage ran)
         route_b       {npz, source_ply, q_back_ply, encode_*,
                        dequantize_check}
-        counts        {input, pruned, clipped, output}
-        sizes         {input_bytes, pruned_bytes, final_bytes, npz_bytes,
+        counts        {input, pruned, clipped, output} (pruned/clipped are
+                       None when the stage did not run)
+        sizes         {input_bytes, pruned_bytes, clipped_bytes,
+                       normalized_bytes, final_bytes, npz_bytes,
                        q_back_bytes} (entries that do not apply are None)
-        ratios        {pruned_vs_input, final_vs_input, npz_vs_input}
+        ratios        {pruned_vs_input, clipped_vs_input, final_vs_input,
+                       normalized_vs_input, npz_vs_input} (entries that do
+                       not apply are absent)
         timings       {total_s, <stage>: s, ...}
         outputs       {pruned_ply, clipped_ply, sh_ply, normalized_ply,
                        normalize_sidecar, final_ply, npz, q_back_ply,
@@ -244,6 +267,7 @@ def run_pipeline(input_ply, output_dir, *,
         "counts": {"input": None, "pruned": None, "clipped": None,
                    "output": None},
         "sizes": {"input_bytes": None, "pruned_bytes": None,
+                  "clipped_bytes": None, "normalized_bytes": None,
                   "final_bytes": None, "npz_bytes": None,
                   "q_back_bytes": None},
         "ratios": {},
@@ -455,6 +479,7 @@ def run_pipeline(input_ply, output_dir, *,
             clip_plan = _run_stage("mirror_clip", do_clip)
             result["mirror_clip"] = clip_plan
             result["counts"]["clipped"] = clip_plan["kept_count"]
+            result["sizes"]["clipped_bytes"] = clip_path.stat().st_size
             result["outputs"]["clipped_ply"] = str(clip_path)
             clip_src = clip_path
             last_count = clip_plan["kept_count"]
@@ -495,6 +520,7 @@ def run_pipeline(input_ply, output_dir, *,
 
             norm_outcome = _run_stage("normalize", do_normalize)
             result["normalize"] = norm_outcome
+            result["sizes"]["normalized_bytes"] = norm_path.stat().st_size
             result["outputs"]["normalized_ply"] = str(norm_path)
             result["outputs"]["normalize_sidecar"] = str(sidecar_path)
             norm_out = norm_path
@@ -572,9 +598,15 @@ def run_pipeline(input_ply, output_dir, *,
         if sizes["pruned_bytes"]:
             result["ratios"]["pruned_vs_input"] = round(
                 sizes["input_bytes"] / sizes["pruned_bytes"], 4)
+        if sizes["clipped_bytes"]:
+            result["ratios"]["clipped_vs_input"] = round(
+                sizes["input_bytes"] / sizes["clipped_bytes"], 4)
         if sizes["final_bytes"]:
             result["ratios"]["final_vs_input"] = round(
                 sizes["input_bytes"] / sizes["final_bytes"], 4)
+        if sizes["normalized_bytes"]:
+            result["ratios"]["normalized_vs_input"] = round(
+                sizes["input_bytes"] / sizes["normalized_bytes"], 4)
         if sizes["npz_bytes"]:
             result["ratios"]["npz_vs_input"] = round(
                 sizes["input_bytes"] / sizes["npz_bytes"], 4)
@@ -688,10 +720,39 @@ def _print_summary(result):
         if st.get("error"):
             line += f"  ERROR: {st['error']}"
         print(line)
-    if result["counts"]["output"]:
-        print(f"Gaussians: {result['counts']['input']} -> "
-              f"{result['counts']['output']}")
-    for key in ("pruned_vs_input", "final_vs_input", "npz_vs_input"):
+    counts = result["counts"]
+    if counts["output"]:
+        chain = [f"input {counts['input']}"]
+        for label in ("pruned", "clipped"):
+            if counts.get(label) is not None:
+                chain.append(f"{label} {counts[label]}")
+        chain.append(f"output {counts['output']}")
+        print("Gaussians: " + " -> ".join(chain))
+    if result.get("mirror_clip"):
+        cp = result["mirror_clip"]
+        print(f"Clip:       removed {cp['removed_count']} "
+              f"(weight share {cp['removed_weight_share']:.3f}), "
+              f"plane {cp['plane_method']} "
+              f"confidence {cp['plane_confidence']:.3f}"
+              + (", normal flipped to the minority-weight side"
+                 if cp.get("normal_flipped") else ""))
+    if result.get("normalize"):
+        n = result["normalize"]
+        plan = n["plan"]
+        parts = []
+        for key, label in (("center", "centre"), ("upright", "up"),
+                           ("scale", "scale")):
+            if key in plan["methods"]:
+                text = plan["methods"][key]
+                conf = plan["confidence"].get(key)
+                if conf is not None:
+                    text += f" (confidence {float(conf):.3f})"
+                parts.append(f"{label}: {text}")
+        print("Normalize:  " + "; ".join(parts))
+        print(f"            sidecar round-trip relative error "
+              f"{n['relative']:.3e}")
+    for key in ("pruned_vs_input", "clipped_vs_input", "final_vs_input",
+                "normalized_vs_input", "npz_vs_input"):
         if key in result["ratios"]:
             print(f"Ratio {key}: {result['ratios'][key]:.3f}x")
     for key in ("pruned_ply", "clipped_ply", "sh_ply", "normalized_ply",
@@ -775,22 +836,24 @@ def main(argv=None):
     ap.add_argument("--quiet", action="store_true",
                     help="suppress per-stage stdout (evidence blocks)")
     a = ap.parse_args(argv)
+    d = STAGE_DEFAULTS  # one block drives library and CLI defaults
 
     result = run_pipeline(
         a.input, a.output_dir,
-        prune=not a.no_prune,
-        sh_degree=a.sh_degree,
-        route_b=a.route_b,
-        coverage=not a.no_coverage,
+        prune=(not a.no_prune) and d["prune"],
+        sh_degree=a.sh_degree if a.sh_degree is not None else d["sh_degree"],
+        route_b=a.route_b or d["route_b"],
+        coverage=(not a.no_coverage) and d["coverage"],
         report_name=a.report_name,
         quiet=a.quiet,
-        singleton_floaters=a.remove_singleton_floaters,
-        needle_cleanup=a.needle_cleanup,
-        mirror_clip=a.mirror_clip,
-        normalize=a.normalize,
-        upright=a.upright,
-        up_axis=a.up_axis,
-        no_scale=a.no_normalize_scale,
+        singleton_floaters=(a.remove_singleton_floaters
+                            or d["singleton_floaters"]),
+        needle_cleanup=a.needle_cleanup or d["needle_cleanup"],
+        mirror_clip=a.mirror_clip or d["mirror_clip"],
+        normalize=a.normalize or d["normalize"],
+        upright=a.upright or d["upright"],
+        up_axis=a.up_axis if a.up_axis is not None else d["up_axis"],
+        no_scale=a.no_normalize_scale or d["no_scale"],
         max_voxel_fraction=a.max_voxel_fraction,
         voxel_size=a.voxel_size,
         importance_threshold=a.importance_threshold,
