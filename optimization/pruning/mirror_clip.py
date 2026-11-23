@@ -8,7 +8,9 @@ as geometry under the marble floor. This tool clips that content:
 2. Removes every Gaussian whose centre is farther than a scene-relative
    margin (default BELOW_MARGIN_RATIO x robust extent - identical to
    analyze_scene's "below dominant plane" count) on the negative side
-   (n.x + D < -margin).
+   (n.x + D < -margin). For a detected plane the normal is first signed
+   so the removed side carries the minority of scene weight (RANSAC
+   normal signs are arbitrary; mirror content is the small side).
 3. Guards, both scene-relative:
    - plane confidence must be at least MIN_PLANE_CONFIDENCE (0.30);
    - the detected subject centre must NOT lie on the removed side;
@@ -94,6 +96,18 @@ def build_plan(rep, scene, plane=None, margin_ratio=None,
 
     xyz = scene["xyz"]
     weights = scene["weights"]
+
+    normal_flipped = False
+    if plane is None:
+        # RANSAC normal signs are arbitrary: sign the detected plane so the
+        # removed side is the minority-weight side (mirror content is small).
+        dist_raw = signed_distances(xyz, normal, point)
+        total_raw = float(weights.sum())
+        if total_raw > 0 and \
+                float(weights[dist_raw < 0].sum()) / total_raw > 0.5:
+            normal = -normal
+            normal_flipped = True
+
     dist = signed_distances(xyz, normal, point)
     remove = dist < -margin
 
@@ -132,6 +146,7 @@ def build_plan(rep, scene, plane=None, margin_ratio=None,
         "plane_confidence": confidence,
         "plane_method": method,
         "manual_plane": plane is not None,
+        "normal_flipped": normal_flipped,
         "extent": extent,
         "margin_ratio": ratio,
         "margin": margin,
@@ -175,6 +190,9 @@ def format_report(plan, info_out, sizes, elapsed):
         f"{plan['normal'][2]:.4f}), d {plan['d']:.4f}  [{side}]")
     add(f"            confidence {plan['plane_confidence']:.3f}  "
         f"method: {plan['plane_method']}")
+    if plan.get("normal_flipped"):
+        add("            normal signed so the removed side holds the "
+            "minority of scene weight")
     add(f"Margin:     {plan['margin']:.4f} "
         f"({plan['margin_ratio']:g} x robust extent {plan['extent']:.4f}); "
         f"removed side is n.x + d < -margin")

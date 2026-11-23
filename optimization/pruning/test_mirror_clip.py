@@ -107,6 +107,25 @@ class TestBuildPlan(unittest.TestCase):
         plan = mc.build_plan(rep, scene, margin_ratio=0.0)
         np.testing.assert_array_equal(plan["remove"], [False, True])
 
+    def test_detected_plane_sign_normalised_to_minority_side(self):
+        # fitted normal points down: the raw negative side is the heavy
+        # above-floor half; the plan must flip it and clip the sparse below
+        rep = make_rep(normal=(0.0, -1.0, 0.0))
+        scene = make_scene(n_above=80, n_below=20)
+        plan = mc.build_plan(rep, scene)
+        self.assertTrue(plan["normal_flipped"])
+        self.assertTrue(plan["remove"][80:].all())
+        self.assertFalse(plan["remove"][:80].any())
+        self.assertEqual(plan["removed_count"], 20)
+
+    def test_manual_plane_is_never_flipped(self):
+        rep = make_rep(subject=False)
+        scene = make_scene(n_above=80, n_below=20)
+        plan = mc.build_plan(rep, scene, plane=((0.0, -1.0, 0.0), 0.0),
+                             max_weight_fraction=0.9)
+        self.assertFalse(plan["normal_flipped"])
+        self.assertEqual(plan["removed_count"], 80)
+
 
 class TestWriteAndCli(unittest.TestCase):
     def test_write_preserves_comments_and_property_order(self):
