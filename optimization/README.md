@@ -1,27 +1,32 @@
 # Gaussian optimization (size reduction for Brush scenes)
 
-Tools for inspecting, pruning and shrinking Gaussian splat PLY files
-exported by Brush, plus an end-to-end pipeline the desktop app can call.
-Everything here reads a PLY and writes *new* files; the input is never
-modified and existing outputs are never overwritten.
+Tools for inspecting, pruning, clipping and normalizing Gaussian splat
+PLY files exported by Brush, plus an end-to-end pipeline the desktop
+app can call. Everything here reads a PLY and writes *new* files; the
+input is never modified and existing outputs are never overwritten.
 
 | Module | Purpose |
 |---|---|
 | `inspect_ply.py` | header/property/statistics report for one PLY |
+| `analyze_scene.py` | read-only scene diagnostics (centre, extent, plane, up, subject, needles, mirror) |
 | `pruning/prune.py` | baseline opacity-threshold prune |
 | `pruning/smart_prune.py` | spatially safe prune (voxel budget, floater flags) |
+| `pruning/mirror_clip.py` | clip candidate mirror content below the dominant plane |
 | `pruning/removal_map.py` | per-voxel histogram of what a prune removed |
 | `pruning/coverage_check.py` | occupancy loss proxy, original vs pruned |
+| `normalize/normalize.py`, `core.py` | centre + scale (+ optional upright) with a sidecar JSON and undo |
 | `quantize/sh_truncate.py` | Route A: SH degree truncation |
 | `quantize/quantize.py`, `dequantize.py`, `core.py` | Route B: uint8/uint16 `.npz` archive + decode |
 | `quantize/gzip_ply.py` | Route C: gzip baseline |
-| `pipeline.py` | `run_pipeline()` + CLI: inspect -> smart prune -> SH -> Route B -> report |
+| `pipeline.py` | `run_pipeline()` + CLI: inspect -> smart prune -> clip -> SH -> normalize -> Route B -> report |
 | `evaluate.py` | comparison table (CSV + markdown) from real files |
 | `results/` | small CSV/JSON results committed with the repo |
 
 Tests: `optimization/pruning/test_smart_prune.py`,
+`optimization/pruning/test_mirror_clip.py`,
 `optimization/quantize/test_quantize.py`,
-`optimization/test_pipeline.py`, `optimization/test_evaluate.py`.
+`optimization/test_pipeline.py`, `optimization/test_evaluate.py`,
+`optimization/test_normalize_invariance.py`.
 
 ## PLY attribute reference (Brush exports)
 
@@ -107,7 +112,65 @@ It reports where Gaussians disappeared (emptied voxels, >=50% loss
 voxels, max loss) so holes can be spotted before opening Brush. **It
 does not measure image quality.**
 
-### 5. Route A: SH degree truncation (`quantize/sh_truncate.py`)
+### 5. Scene analysis (`analyze_scene.py`)
+
+```powershell
+python -m optimization.analyze_scene --ply <file.ply> [--json]
+```
+
+Read-only, scene-relative diagnostics: robust centre and extent
+(p1..p99 box), dominant plane (RANSAC on compact high-opacity
+Gaussians, refined by PCA on inliers) with confidence, estimated up
+direction with confidence, subject candidate centre/radius with
+confidence, needle count, and Gaussians below the dominant plane by a
+scene-relative margin (candidate mirror content). No threshold is a
+fixed number of scene units. Never writes or modifies files.
+
+### 6. Mirror clip (`pruning/mirror_clip.py`)
+
+Removes candidate mirror content below the dominant plane (the figurine
+scene has mirrored copies of the figure and room baked in as geometry
+under the marble floor):
+
+```powershell
+python -m optimization.pruning.mirror_clip --input <in.ply> `
+    --output <out.ply> [--plane NX NY NZ D] [--margin-ratio R] `
+    [--max-weight-fraction F] [--json <report.json>]
+```
+
+The detected plane's normal is signed so the removed side carries the
+minority of scene weight (RANSAC signs are arbitrary; mirror content is
+the small side - `normal_flipped` in the plan records when this
+happened; a manual `--plane` is never flipped). Guards, all
+scene-relative: plane confidence >= 0.30, the subject centre must not
+lie on the removed side, removed weight share <= 0.6 (configurable).
+A violated guard refuses the clip (exit 2) instead of guessing.
+
+### 7. Normalize (`normalize/normalize.py` + `core.py`)
+
+```powershell
+python -m optimization.normalize.normalize --input <in.ply> --output <out.ply> `
+    [--sidecar <out.normalize.json>] [--upright] [--up-axis X Y Z] `
+    [--target-radius R] [--scale S] [--no-scale] [--colmap-dir SPARSE_DIR]
+
+python -m optimization.normalize.normalize --undo <sidecar.json> `
+    --input <normalized.ply> --output <restored.ply>
+```
+
+Centres the subject (evidence: subject density centre with confidence,
+falling back to the robust centre), applies one uniform scale so the
+subject radius p90 becomes the target (default 1), and optionally
+rotates the estimated up direction to Brush +y. Every automatic choice
+reports its method and confidence in the sidecar; manual overrides
+always win. `opacity` and `f_dc` are untouched; positions, log-scales,
+orientations and SH coefficients are transformed consistently, and the
+write is refused unless the sidecar round trip stays within
+`ROUNDTRIP_REL_TOLERANCE` (1e-5 worst relative error).
+
+**Sidecar contract** (fields, convention string, undo, consumers):
+see `optimization/normalize/SIDECAR_CONTRACT.md`.
+
+### 8. Route A: SH degree truncation (`quantize/sh_truncate.py`)
 
 Drops `f_rest` coefficients (45 -> 24/9/0 for degree 2/1/0), updates the
 `SH degree:` header comment, keeps property order otherwise. Biggest
@@ -118,7 +181,7 @@ python -m optimization.quantize.sh_truncate --input in.ply --output out.ply --de
 python -m optimization.quantize.sh_truncate --input in.ply --evidence-only
 ```
 
-### 6. Route B: quantized archive (`quantize/quantize.py` + `dequantize.py`)
+### 9. Route B: quantized archive (`quantize/quantize.py` + `dequantize.py`)
 
 Quantizes every attribute to uint8/uint16 with stored per-attribute
 min/max (default bits: pos 16, rot 8, scale 16, opacity 16, dc 16,
@@ -131,32 +194,42 @@ decoded `q_back` PLY is a normal Brush-readable file with the same size
 as its source PLY; the compression lives in the archive, not in the PLY
 Brush opens.
 
-### 7. Route C: gzip (`quantize/gzip_ply.py`)
+### 10. Route C: gzip (`quantize/gzip_ply.py`)
 
 Lossless baseline (byte-identical after `gunzip`). Brush cannot open
 `.gz` either; barely shrinks the figurine (60.96 -> 57.07 MB).
 
-### 8. Pipeline (`pipeline.py`)
+### 11. Pipeline (`pipeline.py`)
 
 ```powershell
 python -m optimization.pipeline --input <scene.ply> --output-dir <dir> `
-    [--sh-degree {0,1,2,3}] [--route-b] [--no-prune] [--no-coverage] [--quiet]
+    [--sh-degree {0,1,2,3}] [--route-b] [--no-prune] [--no-coverage] `
+    [--needle-cleanup] [--mirror-clip] `
+    [--normalize] [--upright] [--up-axis X Y Z] [--no-normalize-scale] `
+    [--report-name NAME.json] [--quiet]
 ```
 
-Stages: `inspect -> smart_prune -> sh_truncate (optional) -> route_b
-(optional) -> report`. Exit codes: **0** ok, **2** bad arguments/paths or
-output already exists, **3** stage failure (error is written into the
-report; partial outputs of that run are removed).
+Stages: `inspect -> smart_prune -> mirror_clip (optional) ->
+sh_truncate (optional) -> normalize (optional) -> route_b (optional)
+-> report`. Exit codes: **0** ok, **2** bad arguments/paths or output
+already exists, **3** stage failure (error is written into the report;
+partial outputs of that run are removed). Normalisation runs last so
+every earlier stage keeps working in the input's own units.
 
-Defaults are chosen only from Brush verdicts: smart pruning **on**
-(voxel safety invariant measured: 0 emptied vs baseline 610, and the
-one pruned file with a verdict, `smart_shd2`, opens ok), SH truncation
-**off** (no verdict reports no visible colour/shading loss versus the
-original - `smart_shd2` colour shift/flat shading were not judged and
-shd1/shd0 are "not tested"), Route B **off** (storage-only, decoded
-PLY "not tested").
+Stage defaults live in one block, `STAGE_DEFAULTS` in `pipeline.py`
+(behind both the CLI and `run_pipeline()`): smart prune **on**, SH
+truncation/Route B/needle cleanup/mirror clip/normalise **off**. They
+are chosen only from Brush verdicts: smart pruning on (voxel safety
+invariant measured: 0 emptied vs baseline 610, and the one pruned file
+with a verdict, `smart_shd2`, opens ok), SH truncation off (no verdict
+reports no visible colour/shading loss versus the original - `smart_shd2`
+colour shift/flat shading were not judged and shd1/shd0 are "not
+tested"), Route B off (storage-only, decoded PLY "not tested"), needle
+cleanup / mirror clip / normalise off until their outputs are confirmed
+in Brush (the A-D comparison; see `results/BRUSH_CHECKLIST.md`). Flip a
+default in `STAGE_DEFAULTS` only after that check.
 
-### 9. Evaluation (`evaluate.py`)
+### 12. Evaluation (`evaluate.py`)
 
 Builds `results/evaluation_table.csv` + `results/evaluation_summary.md`
 from real files. Columns that cannot be measured here are explicit:
@@ -165,10 +238,18 @@ from real files. Columns that cannot be measured here are explicit:
 verdicts in `BRUSH_LOAD_STATUS` **including the GPU each file was viewed
 on** (anything unverified stays `not tested`).
 
+New-stage columns (`needles_removed`, `clip_removed`,
+`clip_weight_share`, `normalize_center`, `normalize_up`,
+`normalize_scale`, `normalize_roundtrip_rel`) are read from a real
+pipeline report given with `--report LABEL=report.json`: without a
+report they read `not measured`, with a report whose stage did not run
+`n/a (stage off)`.
+
 ```powershell
 python -m optimization.evaluate --original orig.ply `
     --variant smart_default=smart.ply --time smart_default=1.1 `
-    --round-trip route_b_decoded=smart.ply,smart_qback.ply
+    --round-trip route_b_decoded=smart.ply,smart_qback.ply `
+    --report smart_default=results/smart_pipeline.json
 ```
 
 ## Results (figurine, one scene)
@@ -303,9 +384,17 @@ visual check.
 | smart prune | **on** | the voxel safety invariant is measured (0 voxels emptied vs baseline's 610) and the only pruned file with a verdict, `smart_shd2`, opens ok - while `smart.ply` itself is "not tested". |
 | SH truncation | **off** (optional export: 27.74 / 16.79 / 10.22 MB for degree 2/1/0) | no verdict reports no visible colour or shading loss versus the original - `smart_shd2` opened ok but colour shift/flat shading were not judged, and `smart_shd1`/`smart_shd0` are "not tested". |
 | Route B | **off** (optional storage-only export) | Brush cannot read the `.npz` and the decoded `smart_qback.ply` is "not tested", so there is no verdict to justify enabling it. |
+| mirror clip | **off** | the guards are measured on the figurine run (removed 22,371 Gaussians, weight share 0.445, plane confidence 0.414) but no Brush verdict yet confirms the floor copies are gone and the figure intact - see `results/BRUSH_CHECKLIST.md`. |
+| normalise | **off** | invariance is proven on synthetic scenes and the figurine run detected its subject at confidence 1.000, but no Brush verdict exists for a normalised file - flip only after the A-D check. |
 
 ## Limits
 
+- **Detection evidence, stated precisely.** Invariance of the
+  normalisation under rigid + uniform-scale transforms is proven on
+  synthetic scenes with a constructed k-NN class gap
+  (`optimization/test_normalize_invariance.py`); subject detection on
+  real scenes is a heuristic validated on one real scene (the
+  figurine). Nothing here claims more than that.
 - **No quality metrics.** PSNR, SSIM and FPS are not computed anywhere in
   this repository; they read `not measured` in every table. The coverage
   columns are geometric proxies only.
@@ -367,12 +456,12 @@ contract (`core/project_manager.py`): PLYs go to
 |---|---|
 | `status`, `error`, `error_kind`, `error_stage`, `exit_code` | `ok`/`error`; `bad_input`/`exists`/`stage`; 0/2/3 |
 | `stages[]` | `{name, status: ok\|skipped\|error, time_s, error, reason?}` |
-| `counts` | `input`, `pruned`, `output` |
-| `sizes`, `ratios` | bytes in/out; `pruned_vs_input`, `final_vs_input`, `npz_vs_input` |
+| `counts` | `input`, `pruned`, `clipped`, `output` (each stage's remaining count) |
+| `sizes`, `ratios` | bytes in/out; `pruned_vs_input`, `clipped_vs_input`, `final_vs_input`, `normalized_vs_input`, `npz_vs_input` |
 | `timings` | `total_s` plus one key per stage |
-| `outputs` | `pruned_ply`, `sh_ply`, `final_ply`, `npz`, `q_back_ply`, `report_json`, `csv_log` |
-| `inspect`, `smart_prune`, `coverage`, `sh_truncate`, `route_b` | full per-stage reports (or `null`) |
-| `warnings` | e.g. skipped stages, Route B storage-only notice |
+| `outputs` | `pruned_ply`, `clipped_ply`, `sh_ply`, `normalized_ply`, `normalize_sidecar`, `final_ply`, `npz`, `q_back_ply`, `report_json`, `csv_log` |
+| `inspect`, `smart_prune`, `mirror_clip`, `coverage`, `sh_truncate`, `normalize`, `route_b` | full per-stage reports (or `null`) |
+| `warnings` | e.g. skipped stages, normalize plan warnings (`normalize: ...`), Route B storage-only notice |
 
 Error contract: missing file / bad option / existing output -> dict with
 `error_kind` `bad_input` or `exists`, **nothing written**, no report.
@@ -383,14 +472,20 @@ report JSON.
 ## Commands (run from the repo root)
 
 ```powershell
-# inspect
+# inspect + scene analysis
 python -m optimization.inspect_ply --ply <file.ply>
+python -m optimization.analyze_scene --ply <file.ply>
 
 # pruning
 python -m optimization.pruning.prune --input <in.ply> --output <out.ply>
 python -m optimization.pruning.smart_prune --input <in.ply> --output <out.ply> --json <r.json>
 python -m optimization.pruning.coverage_check --input <orig.ply> --pruned <pruned.ply>
 python -m optimization.pruning.removal_map --input <orig.ply> --pruned <pruned.ply>
+
+# mirror clip + normalize
+python -m optimization.pruning.mirror_clip --input <in.ply> --output <out.ply>
+python -m optimization.normalize.normalize --input <in.ply> --output <out.ply>
+python -m optimization.normalize.normalize --undo <sidecar.json> --input <norm.ply> --output <restored.ply>
 
 # quantization routes
 python -m optimization.quantize.sh_truncate --input <in.ply> --output <out.ply> --degree 2

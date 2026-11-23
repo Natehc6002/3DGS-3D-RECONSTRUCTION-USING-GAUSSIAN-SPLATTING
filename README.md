@@ -18,6 +18,10 @@ python app.py
 
 See [backend/SETUP.md](backend/SETUP.md) for COLMAP and Brush versions, the project folder layout, and the runner commands.
 
+## Optimization tools
+
+See [optimization/README.md](optimization/README.md) for the PLY inspection, pruning, mirror-clip and normalisation tools plus the end-to-end pipeline, [optimization/results/NEXT_SCENES.md](optimization/results/NEXT_SCENES.md) for the per-scene run checklist, and [optimization/results/BRUSH_CHECKLIST.md](optimization/results/BRUSH_CHECKLIST.md) for the Brush A-D verification of the clip/normalise stages.
+
 The desktop app provides project creation/opening and a workspace. Its Brush integration uses the backend runner so the GUI can show checkpoint progress and detect incomplete runs.
 
 ## Windows desktop workflow

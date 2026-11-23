@@ -48,26 +48,30 @@ def _validate_paths(src, dst, sidecar):
             f"sidecar already exists, not overwriting: {sidecar}")
 
 
-def _run_forward(a):
-    _validate_paths(a.input, a.output, a.sidecar)
-    if a.scale is not None and a.target_radius != 1.0:
-        raise ValueError("use only one of --scale and --target-radius")
-    if a.scale is not None and a.no_scale:
-        raise ValueError("use only one of --scale and --no-scale")
-    ply, v = core.read_vertex(a.input)
+def normalize_file(src, dst, sidecar_path, *, center=None, colmap_dir=None,
+                   upright=False, up_axis=None, target_radius=1.0,
+                   scale=None, no_scale=False):
+    """Validate, transform and write <dst> + <sidecar_path>.
+
+    Returns {"plan", "sidecar", "roundtrip", "relative", "gaussians"}
+    for the caller's report. Raises ValueError (user error) or
+    StageError (verification failure); writes nothing on failure.
+    """
+    _validate_paths(src, dst, sidecar_path)
+    ply, v = core.read_vertex(src)
     plan = core.compute_plan(
-        a.input, v=v,
-        center=a.center,
-        colmap_dir=a.colmap_dir,
-        upright=a.upright,
-        up_axis=a.up_axis,
-        target_radius=a.target_radius,
-        scale=a.scale,
-        no_scale=a.no_scale,
+        src, v=v,
+        center=center,
+        colmap_dir=colmap_dir,
+        upright=upright,
+        up_axis=up_axis,
+        target_radius=target_radius,
+        scale=scale,
+        no_scale=no_scale,
     )
     out = core.apply_plan(v, plan)
     # Round trip through the JSON sidecar so serialization counts.
-    sidecar = core.build_sidecar(plan, a.input, a.output)
+    sidecar = core.build_sidecar(plan, src, dst)
     rt = core.roundtrip_errors(v, plan, sidecar)
     sidecar["verification"]["roundtrip_max_error"] = rt
     rel = core.roundtrip_worst_relative(v, rt)
@@ -76,10 +80,30 @@ def _run_forward(a):
         raise core.StageError(
             f"round-trip check failed: worst relative error {rel:.3e} > "
             f"{core.ROUNDTRIP_REL_TOLERANCE:g}; refusing to write")
-    core.write_vertex(a.output, out, list(ply.comments))
-    Path(a.sidecar).write_text(
+    core.write_vertex(dst, out, list(ply.comments))
+    Path(sidecar_path).write_text(
         json.dumps(sidecar, indent=2) + "\n", encoding="utf-8")
-    for line in core.format_report(plan, sidecar=sidecar, rt=rt,
+    return {"plan": plan, "sidecar": sidecar, "roundtrip": rt,
+            "relative": rel, "gaussians": len(out)}
+
+
+def _run_forward(a):
+    if a.scale is not None and a.target_radius != 1.0:
+        raise ValueError("use only one of --scale and --target-radius")
+    if a.scale is not None and a.no_scale:
+        raise ValueError("use only one of --scale and --no-scale")
+    outcome = normalize_file(
+        a.input, a.output, a.sidecar,
+        center=a.center,
+        colmap_dir=a.colmap_dir,
+        upright=a.upright,
+        up_axis=a.up_axis,
+        target_radius=a.target_radius,
+        scale=a.scale,
+        no_scale=a.no_scale,
+    )
+    for line in core.format_report(outcome["plan"], sidecar=outcome["sidecar"],
+                                   rt=outcome["roundtrip"],
                                    sidecar_path=a.sidecar):
         print(line)
     print(f"  wrote     {a.output}")

@@ -4,6 +4,7 @@ Run from the repo root:
     .venv\\Scripts\\python.exe -m unittest optimization.test_evaluate -v
 """
 import csv
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,8 +13,9 @@ import numpy as np
 
 from optimization.evaluate import (
     BRUSH_LOAD_STATUS, COLUMNS, QUALITY, collect_rows, coverage_proxy,
-    main, roundtrip_max_abs_err, write_csv, write_markdown,
+    main, report_facts, roundtrip_max_abs_err, write_csv, write_markdown,
 )
+from optimization.pipeline import run_pipeline
 from optimization.test_pipeline import make_vertex_array, write_ply
 
 
@@ -123,14 +125,22 @@ class TestOutputs(EvaluateTestCase):
         for col in ("psnr", "ssim", "fps"):
             self.assertEqual({r[col] for r in data}, {QUALITY})
         self.assertEqual(data[1]["brush_load_status"], "not tested")
+        # no report -> new-stage columns say "not measured", never a guess
+        for col in ("needles_removed", "clip_removed", "clip_weight_share",
+                    "normalize_center", "normalize_up", "normalize_scale",
+                    "normalize_roundtrip_rel"):
+            self.assertEqual(data[1][col], QUALITY, col)
+            self.assertEqual(data[0][col], "n/a", col)
 
         md = md_path.read_text(encoding="utf-8")
         self.assertIn("| variant |", md)
         self.assertIn("not measured", md)
-        # no raw pipe inside table headers (would break the table)
+        # no raw pipe inside table headers (would break the table);
+        # the markdown omits "notes" (it is a section below), so the
+        # pipe count equals the CSV column count
         header_line = next(line for line in md.splitlines()
                            if line.startswith("| variant |"))
-        self.assertEqual(header_line.count("|"), 11 + 1)
+        self.assertEqual(header_line.count("|"), len(COLUMNS))
 
     def test_main_writes_reports_and_validates_paths(self):
         subset = write_ply(self.dir / "sub.ply", self.orig_v[:150],
@@ -155,6 +165,120 @@ class TestOutputs(EvaluateTestCase):
                    "--out-csv", str(self.dir / "y.csv"),
                    "--out-md", str(self.dir / "y.md")])
         self.assertEqual(rc, 2)
+
+
+class TestReportFacts(EvaluateTestCase):
+    """--report fills the new-stage columns from real run artifacts."""
+
+    def _variant(self):
+        return write_ply(self.dir / "sub.ply", self.orig_v[:150],
+                         sh_degree=3)
+
+    def _write_report(self, payload):
+        path = self.dir / "rep.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return path
+
+    def test_real_pipeline_report_needles_and_stage_off(self):
+        res = run_pipeline(self.orig, self.dir, needle_cleanup=True,
+                           quiet=True)
+        self.assertEqual(res["status"], "ok", res.get("error"))
+        report_path = self.dir / "orig_pipeline.json"
+        self.assertTrue(report_path.is_file())
+        rows = collect_rows(self.orig, {"smart": str(self._variant())},
+                            reports={"smart": str(report_path)})
+        facts = rows[1]
+        expected = str(res["smart_prune"]["removed_by_reason"]["needle"])
+        self.assertEqual(facts["needles_removed"], expected)
+        # clip and normalize did not run in this report
+        self.assertEqual(facts["clip_removed"], "n/a (stage off)")
+        self.assertEqual(facts["clip_weight_share"], "n/a (stage off)")
+        self.assertEqual(facts["normalize_center"], "n/a (stage off)")
+        self.assertEqual(facts["normalize_roundtrip_rel"], "n/a (stage off)")
+
+    def test_needle_cleanup_off_report_reads_na(self):
+        payload = {
+            "schema_version": 1,
+            "stages": [],
+            "smart_prune": {"thresholds": {"needle_enabled": False},
+                            "removed_by_reason": {"needle": 0}},
+        }
+        rows = collect_rows(self.orig, {"smart": str(self._variant())},
+                            reports={"smart": str(self._write_report(payload))})
+        self.assertEqual(rows[1]["needles_removed"],
+                         "n/a (needle cleanup off)")
+
+    def test_clip_and_normalize_values_come_from_report(self):
+        payload = {
+            "schema_version": 1,
+            "stages": [],
+            "smart_prune": {"thresholds": {"needle_enabled": True},
+                            "removed_by_reason": {"needle": 83}},
+            "mirror_clip": {"removed_count": 25535,
+                            "removed_weight_share": 0.449,
+                            "plane_confidence": 0.424},
+            "normalize": {
+                "relative": 2.4e-7,
+                "plan": {
+                    "methods": {
+                        "center": "subject density centre",
+                        "upright": ("dominant plane normal, sign from "
+                                    "majority scene mass (97.9% on the "
+                                    "up side)"),
+                        "scale": ("uniform scale so subject radius p90 "
+                                  "(14.9235) -> 1"),
+                    },
+                    "confidence": {"center": 1.0, "upright": 0.47,
+                                   "scale": 1.0},
+                },
+            },
+        }
+        rows = collect_rows(self.orig, {"full": str(self._variant())},
+                            reports={"full": str(self._write_report(payload))})
+        facts = rows[1]
+        self.assertEqual(facts["needles_removed"], "83")
+        self.assertEqual(facts["clip_removed"], "25535")
+        self.assertEqual(facts["clip_weight_share"], "0.449")
+        self.assertIn("confidence 1.000", facts["normalize_center"])
+        self.assertIn("confidence 0.470", facts["normalize_up"])
+        self.assertIn("confidence 1.000", facts["normalize_scale"])
+        self.assertEqual(facts["normalize_roundtrip_rel"], "2.400e-07")
+
+    def test_rotation_only_normalize_reports_up_not_applied(self):
+        payload = {
+            "schema_version": 1,
+            "stages": [],
+            "normalize": {"relative": 1e-8,
+                          "plan": {"methods": {"center": "manual --center"},
+                                   "confidence": {"center": 1.0}}},
+        }
+        rows = collect_rows(self.orig, {"c": str(self._variant())},
+                            reports={"c": str(self._write_report(payload))})
+        facts = rows[1]
+        self.assertEqual(facts["normalize_up"], "n/a (not applied)")
+        self.assertEqual(facts["normalize_scale"], "n/a (not applied)")
+        self.assertEqual(facts["normalize_center"],
+                         "manual --center (confidence 1.000)")
+
+    def test_unknown_report_label_rejected(self):
+        with self.assertRaises(ValueError):
+            collect_rows(self.orig, {}, reports={"ghost": "x.json"})
+
+    def test_foreign_json_rejected(self):
+        bad = self.dir / "foreign.json"
+        bad.write_text('{"hello": 1}', encoding="utf-8")
+        with self.assertRaises(ValueError):
+            collect_rows(self.orig, {"v": str(self._variant())},
+                         reports={"v": str(bad)})
+
+    def test_missing_report_rejected(self):
+        with self.assertRaises(FileNotFoundError):
+            collect_rows(self.orig, {"v": str(self._variant())},
+                         reports={"v": str(self.dir / "nope.json")})
+
+    def test_report_facts_requires_pipeline_shape(self):
+        with self.assertRaises(ValueError):
+            report_facts(self._write_report({"schema_version": 1}))
 
 
 if __name__ == "__main__":

@@ -14,6 +14,12 @@ is estimated:
     - Coverage proxy is the voxel occupancy loss versus the original
       (geometric proxy only), computed the same way as
       optimization.pruning.coverage_check.
+    - New-stage columns (needles removed, clip removed and weight
+      share, normalize centre/up/scale methods with confidence,
+      normalize round-trip relative error) are read from the pipeline
+      report given with --report LABEL=report.json; without a report
+      they are "not measured", with a report whose stage did not run
+      they are "n/a (stage off)".
 
 Usage:
     python -m optimization.evaluate --original orig.ply \
@@ -21,6 +27,7 @@ Usage:
         --variant smart_default=smart.ply \
         --time baseline_prune=0.2 \
         --round-trip route_b_decoded=smart.ply,smart_qback.ply \
+        --report smart_default=results/smart_pipeline.json \
         [--voxel-size 5.0] [--out-csv PATH] [--out-md PATH]
 
 The two report files are rewritten on every run (they are regenerable
@@ -32,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,8 +56,18 @@ DEFAULT_MD = RESULTS_DIR / "evaluation_summary.md"
 COLUMNS = (
     "variant", "gaussians", "file_size_mb", "size_ratio",
     "processing_time_s", "coverage_proxy",
-    "route_b_roundtrip_max_abs_err", "brush_load_status",
-    "psnr", "ssim", "fps", "notes",
+    "route_b_roundtrip_max_abs_err",
+    "needles_removed", "clip_removed", "clip_weight_share",
+    "normalize_center", "normalize_up", "normalize_scale",
+    "normalize_roundtrip_rel",
+    "brush_load_status", "psnr", "ssim", "fps", "notes",
+)
+
+# Columns filled from a pipeline report (--report) or left "not measured".
+STAGE_FACT_COLUMNS = (
+    "needles_removed", "clip_removed", "clip_weight_share",
+    "normalize_center", "normalize_up", "normalize_scale",
+    "normalize_roundtrip_rel",
 )
 
 # Manual Brush verdicts - update ONLY after a visual check in Brush.
@@ -126,6 +144,53 @@ def roundtrip_max_abs_err(src_path, decoded_path):
                      for n in a.dtype.names))
 
 
+def report_facts(path):
+    """New-stage facts from a pipeline report JSON (real values only).
+
+    Returns {column: str} for STAGE_FACT_COLUMNS. Raises ValueError or
+    FileNotFoundError for a missing/foreign file (exit 2 upstream).
+    """
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    if (not isinstance(data, dict) or "schema_version" not in data
+            or "stages" not in data):
+        raise ValueError(f"not a pipeline report JSON: {path}")
+    facts = {col: "n/a (stage off)" for col in STAGE_FACT_COLUMNS}
+
+    prune = data.get("smart_prune")
+    if prune:
+        if prune.get("thresholds", {}).get("needle_enabled"):
+            facts["needles_removed"] = str(
+                int(prune["removed_by_reason"]["needle"]))
+        else:
+            facts["needles_removed"] = "n/a (needle cleanup off)"
+
+    clip = data.get("mirror_clip")
+    if clip:
+        facts["clip_removed"] = str(int(clip["removed_count"]))
+        facts["clip_weight_share"] = (
+            f"{float(clip['removed_weight_share']):.3f}")
+
+    norm = data.get("normalize")
+    if norm:
+        plan = norm.get("plan") or {}
+        methods = plan.get("methods") or {}
+        confidence = plan.get("confidence") or {}
+
+        def _fmt(key):
+            if key not in methods:
+                return "n/a (not applied)"
+            conf = confidence.get(key)
+            if conf is None:
+                return str(methods[key])
+            return f"{methods[key]} (confidence {float(conf):.3f})"
+
+        facts["normalize_center"] = _fmt("center")
+        facts["normalize_up"] = _fmt("upright")
+        facts["normalize_scale"] = _fmt("scale")
+        facts["normalize_roundtrip_rel"] = f"{float(norm['relative']):.3e}"
+    return facts
+
+
 def coverage_proxy(orig_v, variant_v, voxel_size, loss_threshold=0.5):
     """One-line voxel occupancy loss summary versus the original.
 
@@ -150,14 +215,16 @@ def coverage_proxy(orig_v, variant_v, voxel_size, loss_threshold=0.5):
 
 
 def collect_rows(original_path, variants, times=None, round_trips=None,
-                 voxel_size=5.0):
+                 voxel_size=5.0, reports=None):
     """Build one row dict per variant (including the original row).
 
     variants: ordered {label: path}, times: {label: seconds},
-    round_trips: {label: (source_ply, decoded_ply)}.
+    round_trips: {label: (source_ply, decoded_ply)},
+    reports: {label: pipeline report JSON path}.
     """
     times = times or {}
     round_trips = round_trips or {}
+    reports = reports or {}
     src = Path(original_path)
     if not src.is_file():
         raise FileNotFoundError(f"original not found: {src}")
@@ -168,11 +235,15 @@ def collect_rows(original_path, variants, times=None, round_trips=None,
 
     unknown_time = set(times) - set(variants)
     unknown_rt = set(round_trips) - set(variants)
+    unknown_rep = set(reports) - set(variants)
     if unknown_time:
         raise ValueError(f"--time for unknown variant(s): {sorted(unknown_time)}")
     if unknown_rt:
         raise ValueError(
             f"--round-trip for unknown variant(s): {sorted(unknown_rt)}")
+    if unknown_rep:
+        raise ValueError(
+            f"--report for unknown variant(s): {sorted(unknown_rep)}")
 
     rows = [{
         "variant": "original",
@@ -182,6 +253,7 @@ def collect_rows(original_path, variants, times=None, round_trips=None,
         "processing_time_s": "n/a",
         "coverage_proxy": NA_NO_REMOVALS,
         "route_b_roundtrip_max_abs_err": "n/a",
+        **{col: "n/a" for col in STAGE_FACT_COLUMNS},
         "brush_load_status": BRUSH_LOAD_STATUS["original"],
         "psnr": QUALITY,
         "ssim": QUALITY,
@@ -212,6 +284,11 @@ def collect_rows(original_path, variants, times=None, round_trips=None,
         else:
             rt = "n/a"
 
+        if label in reports:
+            stage_facts = report_facts(reports[label])
+        else:
+            stage_facts = {col: QUALITY for col in STAGE_FACT_COLUMNS}
+
         rows.append({
             "variant": label,
             "gaussians": int(len(v)),
@@ -220,6 +297,7 @@ def collect_rows(original_path, variants, times=None, round_trips=None,
             "processing_time_s": time_s,
             "coverage_proxy": coverage_proxy(orig_v, v, voxel_size),
             "route_b_roundtrip_max_abs_err": rt,
+            **stage_facts,
             "brush_load_status": BRUSH_LOAD_STATUS.get(label, "not tested"),
             "psnr": QUALITY,
             "ssim": QUALITY,
@@ -246,6 +324,11 @@ def write_markdown(rows, original_path, path, generated_at=None):
         timespec="seconds")
     header = ("variant", "gaussians", "size (MB)", "ratio", "time (s)",
               "coverage proxy (voxels)", "Route B round-trip max abs diff",
+              "needles removed", "clip removed", "clip weight share",
+              "normalize centre (method, confidence)",
+              "normalize up (method, confidence)",
+              "normalize scale (method, confidence)",
+              "normalize round-trip rel",
               "Brush load", "PSNR", "SSIM", "FPS")
     lines = [
         "# Optimization evaluation",
@@ -267,6 +350,13 @@ def write_markdown(rows, original_path, path, generated_at=None):
             str(r["processing_time_s"]),
             str(r["coverage_proxy"]),
             str(r["route_b_roundtrip_max_abs_err"]),
+            str(r["needles_removed"]),
+            str(r["clip_removed"]),
+            str(r["clip_weight_share"]),
+            str(r["normalize_center"]),
+            str(r["normalize_up"]),
+            str(r["normalize_scale"]),
+            str(r["normalize_roundtrip_rel"]),
             str(r["brush_load_status"]),
             r["psnr"],
             r["ssim"],
@@ -282,6 +372,15 @@ def write_markdown(rows, original_path, path, generated_at=None):
         "(geometric proxy only, see optimization/pruning/coverage_check.py).",
         "- Route B round-trip is the max absolute difference over all PLY "
         "properties, source vs decoded PLY.",
+        "- Needles removed, clip removed/weight share and the normalize "
+        "columns come from the pipeline report passed with "
+        "--report LABEL=report.json; without a report they read "
+        "\"not measured\", with a report whose stage did not run they read "
+        "\"n/a (stage off)\". Needle cleanup off reads "
+        "\"n/a (needle cleanup off)\".",
+        "- Normalize centre/up/scale show the automatic method and its "
+        "confidence from the report; normalize round-trip rel is the "
+        "sidecar round-trip relative error recorded by the run.",
         "- Brush load status comes from manual visual checks; "
         "\"not tested\" means nobody has opened that file in Brush yet.",
         "- The .npz archive itself is not readable by Brush - only the "
@@ -323,6 +422,10 @@ def main(argv=None):
     ap.add_argument("--round-trip", action="append",
                     metavar="LABEL=SRC.ply,DECODED.ply",
                     help="measure Route B round-trip error for a variant")
+    ap.add_argument("--report", action="append", metavar="LABEL=REPORT.json",
+                    help="pipeline report JSON for a variant; fills the "
+                         "needles/clip/normalize columns with the run's "
+                         "real numbers (repeatable)")
     ap.add_argument("--voxel-size", type=float, default=5.0,
                     help="voxel edge for the coverage proxy (default 5.0)")
     ap.add_argument("--out-csv", default=str(DEFAULT_CSV))
@@ -334,10 +437,11 @@ def main(argv=None):
         times = _parse_pairs(a.time, "--time")
         round_trips = _parse_pairs(a.round_trip, "--round-trip",
                                    split_csv=True)
+        reports = _parse_pairs(a.report, "--report")
         if a.voxel_size <= 0:
             raise ValueError("--voxel-size must be > 0")
         rows = collect_rows(a.original, variants, times, round_trips,
-                            a.voxel_size)
+                            a.voxel_size, reports=reports)
     except (ValueError, FileNotFoundError) as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 2
