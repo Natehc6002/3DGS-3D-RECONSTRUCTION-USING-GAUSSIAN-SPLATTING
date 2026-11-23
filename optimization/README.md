@@ -146,6 +146,14 @@ scene-relative: plane confidence >= 0.30, the subject centre must not
 lie on the removed side, removed weight share <= 0.6 (configurable).
 A violated guard refuses the clip (exit 2) instead of guessing.
 
+**The removed count depends on the stages that ran before the clip**
+(fresh figurine runs): **22,371** removed with smart prune only before
+it (weight share 0.445, plane confidence 0.414), **25,535** with needle
+cleanup and `--sh-degree 1` before it (weight share 0.449, plane
+confidence 0.424). The pipeline runs the clip before SH truncation, so
+the SH flag does not change the clip count; needle cleanup does, by
+changing the candidate set.
+
 ### 7. Normalize (`normalize/normalize.py` + `core.py`)
 
 ```powershell
@@ -166,6 +174,13 @@ always win. `opacity` and `f_dc` are untouched; positions, log-scales,
 orientations and SH coefficients are transformed consistently, and the
 write is refused unless the sidecar round trip stays within
 `ROUNDTRIP_REL_TOLERANCE` (1e-5 worst relative error).
+
+**Upright confidence is low without the clip** (fresh figurine runs):
+with `--upright` and no clip the up-sign confidence is 0.032 (N2) and
+0.031 (N3, needle cleanup) - both below the 0.35 warning threshold, so
+both runs warn the scene may end up flipped 180 deg - whereas the same
+sign mechanism after the clip reads 0.470 (N4, no warning).
+`upright` stays off by default.
 
 **Sidecar contract** (fields, convention string, undo, consumers):
 see `optimization/normalize/SIDECAR_CONTRACT.md`.
@@ -352,7 +367,9 @@ Report: `<output-dir>/<stem>_pipeline.json`, CSV log:
 
 Two files have a recorded verdict (everything else stays `not tested` -
 no verdict is guessed). The GPU used per entry is part of
-`BRUSH_LOAD_STATUS` in `evaluate.py`:
+`BRUSH_LOAD_STATUS` in `evaluate.py`; generated per-variant notes read
+their verdicts only from `results/brush_verdicts.json`, where a label
+that is absent reads `not tested`:
 
 | file | Brush verdict | GPU used |
 |---|---|---|
@@ -384,8 +401,8 @@ visual check.
 | smart prune | **on** | the voxel safety invariant is measured (0 voxels emptied vs baseline's 610) and the only pruned file with a verdict, `smart_shd2`, opens ok - while `smart.ply` itself is "not tested". |
 | SH truncation | **off** (optional export: 27.74 / 16.79 / 10.22 MB for degree 2/1/0) | no verdict reports no visible colour or shading loss versus the original - `smart_shd2` opened ok but colour shift/flat shading were not judged, and `smart_shd1`/`smart_shd0` are "not tested". |
 | Route B | **off** (optional storage-only export) | Brush cannot read the `.npz` and the decoded `smart_qback.ply` is "not tested", so there is no verdict to justify enabling it. |
-| mirror clip | **off** | the guards are measured on the figurine run (removed 22,371 Gaussians, weight share 0.445, plane confidence 0.414) but no Brush verdict yet confirms the floor copies are gone and the figure intact - see `results/BRUSH_CHECKLIST.md`. |
-| normalise | **off** | invariance is proven on synthetic scenes and the figurine run detected its subject at confidence 1.000, but no Brush verdict exists for a normalised file - flip only after the A-D check. |
+| mirror clip | **off** | the count depends on the earlier stages - 22,371 removed with smart prune only before it, 25,535 with needle cleanup and `--sh-degree 1` before it (weight share 0.449, plane confidence 0.424) - and no Brush verdict yet confirms the floor copies are gone and the figure intact - see `results/BRUSH_CHECKLIST.md`. |
+| normalise | **off** | invariance is proven on synthetic scenes and the figurine run detected its subject at confidence 1.000; upright confidence is low without the clip (0.032 vs 0.470 with it), and no Brush verdict exists for a normalised file - flip only after the A-D / N1-N4 checks. |
 
 ## Limits
 
