@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import csv
 import sys
 import re
 import shutil
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import (
 from core.process_manager import ProcessManager
 from core.project_manager import ProjectError, ProjectManager
 from frontend.dashboard import Dashboard
+from frontend.evaluation_dialog import EvaluationResultsDialog
 from frontend.workspace import Workspace
 
 
@@ -125,6 +127,7 @@ class MainWindow(QMainWindow):
         self.workspace.inspect_scene_requested.connect(self._inspect_scene)
         self.workspace.optimize_scene_requested.connect(self._optimize_scene)
         self.workspace.evaluate_scenes_requested.connect(self._evaluate_scenes)
+        self.workspace.view_evaluation_requested.connect(self._view_evaluation_results)
         self.workspace.stop_requested.connect(self.processes.stop)
         self.projects.project_opened.connect(self._on_project_opened)
         self.processes.output_received.connect(self._handle_process_output)
@@ -546,6 +549,36 @@ class MainWindow(QMainWindow):
             self._active_task = ""
             self._active_result_path = ""
             self.workspace.append_output(f"{exc}\n")
+
+    def _view_evaluation_results(self) -> None:
+        project = self.projects.current_project
+        if project is None:
+            QMessageBox.information(self, "Open a project", "Open a project before viewing evaluation results.")
+            return
+        results_folder = project / "results"
+        reports = sorted(
+            results_folder.glob("evaluation*.csv"),
+            key=lambda path: path.stat().st_mtime_ns,
+            reverse=True,
+        )
+        if not reports:
+            QMessageBox.information(
+                self, "No evaluation reports", "Run Evaluate scenes first to create a comparison report."
+            )
+            return
+        options = [path.name for path in reports]
+        selected, accepted = QInputDialog.getItem(
+            self, "Choose evaluation report", "Available reports:", options, 0, False
+        )
+        if not accepted:
+            return
+        report = next(path for path, name in zip(reports, options) if name == selected)
+        try:
+            dialog = EvaluationResultsDialog(report, self)
+        except (OSError, csv.Error, UnicodeError) as exc:
+            QMessageBox.warning(self, "Could not open evaluation report", str(exc))
+            return
+        dialog.exec()
 
     def _import_images(self) -> None:
         project = self.projects.current_project
