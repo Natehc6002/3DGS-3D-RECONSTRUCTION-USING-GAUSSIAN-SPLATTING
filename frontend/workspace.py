@@ -21,6 +21,7 @@ class Workspace(QWidget):
     inspect_scene_requested = Signal()
     optimize_scene_requested = Signal()
     evaluate_scenes_requested = Signal()
+    view_evaluation_requested = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -152,9 +153,13 @@ class Workspace(QWidget):
         evaluate_scenes = QPushButton("Evaluate scenes")
         evaluate_scenes.setObjectName("secondaryButton")
         evaluate_scenes.clicked.connect(self.evaluate_scenes_requested.emit)
+        view_results = QPushButton("View results")
+        view_results.setObjectName("secondaryButton")
+        view_results.clicked.connect(self.view_evaluation_requested.emit)
         optimization_actions.addWidget(inspect_scene)
         optimization_actions.addWidget(optimize_scene)
         optimization_actions.addWidget(evaluate_scenes)
+        optimization_actions.addWidget(view_results)
         optimization_actions.addStretch(1)
         controls_layout.addLayout(optimization_actions)
         center.addWidget(controls)
