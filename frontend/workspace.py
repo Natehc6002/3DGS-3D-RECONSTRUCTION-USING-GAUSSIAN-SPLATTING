@@ -20,6 +20,7 @@ class Workspace(QWidget):
     colmap_requested = Signal()
     inspect_scene_requested = Signal()
     optimize_scene_requested = Signal()
+    evaluate_scenes_requested = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -148,8 +149,12 @@ class Workspace(QWidget):
         optimize_scene = QPushButton("Optimize scene")
         optimize_scene.setObjectName("secondaryButton")
         optimize_scene.clicked.connect(self.optimize_scene_requested.emit)
+        evaluate_scenes = QPushButton("Evaluate scenes")
+        evaluate_scenes.setObjectName("secondaryButton")
+        evaluate_scenes.clicked.connect(self.evaluate_scenes_requested.emit)
         optimization_actions.addWidget(inspect_scene)
         optimization_actions.addWidget(optimize_scene)
+        optimization_actions.addWidget(evaluate_scenes)
         optimization_actions.addStretch(1)
         controls_layout.addLayout(optimization_actions)
         center.addWidget(controls)

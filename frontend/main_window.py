@@ -124,6 +124,7 @@ class MainWindow(QMainWindow):
         self.workspace.colmap_requested.connect(self._run_colmap)
         self.workspace.inspect_scene_requested.connect(self._inspect_scene)
         self.workspace.optimize_scene_requested.connect(self._optimize_scene)
+        self.workspace.evaluate_scenes_requested.connect(self._evaluate_scenes)
         self.workspace.stop_requested.connect(self.processes.stop)
         self.projects.project_opened.connect(self._on_project_opened)
         self.processes.output_received.connect(self._handle_process_output)
@@ -281,11 +282,19 @@ class MainWindow(QMainWindow):
                     message = f"{label} failed with exit code {exit_code}. See the project logs folder."
                 self.workspace.set_latest_update(message)
                 self.workspace.append_output(message + "\n")
-            elif task in {"inspection", "optimization"}:
-                label = "PLY inspection" if task == "inspection" else "Scene optimization"
+            elif task in {"inspection", "optimization", "evaluation"}:
+                labels = {
+                    "inspection": "PLY inspection",
+                    "optimization": "Scene optimization",
+                    "evaluation": "Scene evaluation",
+                }
+                label = labels[task]
                 if succeeded:
                     if task == "inspection":
                         message = f"{label} completed successfully. Output: {result_path}"
+                    elif task == "evaluation":
+                        markdown_path = str(Path(result_path).with_suffix(".md"))
+                        message = f"{label} completed successfully. Reports: {result_path}, {markdown_path}"
                     else:
                         try:
                             report = json.loads(Path(result_path).read_text(encoding="utf-8"))
@@ -452,6 +461,85 @@ class MainWindow(QMainWindow):
                 ["-u", "-m", "optimization.pipeline", "--input", str(scene),
                  "--output-dir", str(project), "--output-stem", output_stem,
                  "--report-name", report.name],
+                working_directory=str(Path(__file__).resolve().parents[1]),
+            )
+        except RuntimeError as exc:
+            self._active_task = ""
+            self._active_result_path = ""
+            self.workspace.append_output(f"{exc}\n")
+
+    def _evaluate_scenes(self) -> None:
+        project = self.projects.current_project
+        if project is None:
+            QMessageBox.information(self, "Open a project", "Open a project before evaluating scenes.")
+            return
+        if self.processes.is_running:
+            QMessageBox.information(self, "Process running", "Wait for the current process to finish first.")
+            return
+        manager = self.projects.scene_manager
+        originals = manager.discover("original") if manager is not None else []
+        if not originals:
+            QMessageBox.information(
+                self, "No original scenes", f"No original PLY scenes found in:\n{project / 'scenes' / 'original'}"
+            )
+            return
+        original_options = [record.name for record in originals]
+        selected, accepted = QInputDialog.getItem(
+            self, "Choose original scene", "Compare variants against:", original_options, 0, False
+        )
+        if not accepted:
+            return
+        original = next(record.path for record, option in zip(originals, original_options) if option == selected)
+
+        variants, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Choose optimized scenes to compare",
+            str(project / "scenes" / "optimized"),
+            "PLY scenes (*.ply)",
+        )
+        if not variants:
+            return
+
+        results_folder = project / "results"
+        report_stem = "evaluation"
+        index = 2
+        while (results_folder / f"{report_stem}.csv").exists() or (results_folder / f"{report_stem}.md").exists():
+            report_stem = f"evaluation_{index}"
+            index += 1
+        csv_path = results_folder / f"{report_stem}.csv"
+        markdown_path = results_folder / f"{report_stem}.md"
+
+        args = ["-u", "-m", "optimization.evaluate", "--original", str(original)]
+        report_files = list(results_folder.glob("*_pipeline.json"))
+        for variant in variants:
+            variant_path = Path(variant).resolve()
+            label = variant_path.stem
+            args.extend(["--variant", f"{label}={variant_path}"])
+            for report_path in report_files:
+                try:
+                    report_data = json.loads(report_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                final_path = report_data.get("outputs", {}).get("final_ply")
+                if final_path and Path(final_path).resolve() == variant_path:
+                    args.extend(["--report", f"{label}={report_path}"])
+                    elapsed = report_data.get("timings", {}).get("total_s")
+                    if isinstance(elapsed, (int, float)):
+                        args.extend(["--time", f"{label}={elapsed}"])
+                    break
+
+        args.extend(["--out-csv", str(csv_path), "--out-md", str(markdown_path)])
+        self._active_task = "evaluation"
+        self._active_result_path = str(csv_path)
+        self.workspace.append_output(
+            f"Evaluating original scene: {original}\n"
+            + "".join(f"Variant: {path}\n" for path in variants)
+            + f"CSV report: {csv_path}\nMarkdown report: {markdown_path}\n"
+        )
+        try:
+            self.processes.start(
+                sys.executable,
+                args,
                 working_directory=str(Path(__file__).resolve().parents[1]),
             )
         except RuntimeError as exc:
