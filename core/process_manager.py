@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, Signal
+import sys
+
+from PySide6.QtCore import QObject, QProcess, QTimer, Signal
 
 
 class ProcessManager(QObject):
@@ -21,6 +23,7 @@ class ProcessManager(QObject):
         self._stop_timer.setSingleShot(True)
         self._stop_timer.setInterval(2000)
         self._stop_timer.timeout.connect(self._kill_if_running)
+        self._tree_killer = QProcess(self)
         self._stopping = False
 
     @property
@@ -41,7 +44,16 @@ class ProcessManager(QObject):
             return
         self._stopping = True
         self.state_changed.emit("STOPPING")
-        self.process.terminate()
+        if sys.platform == "win32":
+            # The training runner launches Brush with subprocess.Popen. Killing
+            # only this QProcess leaves Brush (and its training) running.
+            # taskkill /T terminates the runner's complete child-process tree.
+            self._tree_killer.start(
+                "taskkill",
+                ["/PID", str(int(self.process.processId())), "/T", "/F"],
+            )
+        else:
+            self.process.terminate()
         self._stop_timer.start()
 
     def _read_stdout(self) -> None:

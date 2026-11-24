@@ -330,7 +330,9 @@ class MainWindow(QMainWindow):
             else:
                 self.workspace.set_latest_update("Runner exited successfully but no final PLY was found.")
             return
-        if exit_code == 4:
+        if self.workspace.status.text() == "STOPPED":
+            message = "Training stopped. Brush was closed; no final scene was registered."
+        elif exit_code == 4:
             message = "Training stopped before the final step; no final scene was registered."
         elif exit_code == 3:
             message = "Brush ended without exporting a PLY scene."
