@@ -185,6 +185,7 @@ def run_pipeline(input_ply, output_dir, *,
                  route_b=STAGE_DEFAULTS["route_b"],
                  coverage=STAGE_DEFAULTS["coverage"],
                  report_name=None,
+                 output_stem=None,
                  quiet=False,
                  singleton_floaters=STAGE_DEFAULTS["singleton_floaters"],
                  needle_cleanup=STAGE_DEFAULTS["needle_cleanup"],
@@ -297,6 +298,12 @@ def run_pipeline(input_ply, output_dir, *,
                           up_axis=up_axis, no_scale=no_scale,
                           needle_cleanup=needle_cleanup,
                           mirror_clip=mirror_clip)
+        if output_stem is not None and (
+                not isinstance(output_stem, str)
+                or not output_stem.strip()
+                or Path(output_stem).name != output_stem
+                or any(char in output_stem for char in '<>:"/\\|?*')):
+            raise ValueError("output_stem must be a plain file-name stem")
     except ValueError as e:
         return _finish("bad_input", str(e), 2)
     if not src.is_file():
@@ -309,7 +316,7 @@ def run_pipeline(input_ply, output_dir, *,
     results_dir = outdir / "results" if is_project else outdir
     result["project"] = str(outdir) if is_project else None
 
-    stem = src.stem
+    stem = output_stem or src.stem
     prune_stem = f"{stem}_smart" if prune else stem
     clip_stem = f"{prune_stem}_clip" if mirror_clip else prune_stem
     sh_stem = f"{clip_stem}_shd{sh_degree}" if sh_degree is not None else clip_stem
@@ -833,6 +840,8 @@ def main(argv=None):
                     help="with --normalize: keep input units (centre only)")
     ap.add_argument("--report-name",
                     help="report file name (default <input stem>_pipeline.json)")
+    ap.add_argument("--output-stem",
+                    help="base name for generated PLY outputs (default: input stem)")
     ap.add_argument("--quiet", action="store_true",
                     help="suppress per-stage stdout (evidence blocks)")
     a = ap.parse_args(argv)
@@ -845,6 +854,7 @@ def main(argv=None):
         route_b=a.route_b or d["route_b"],
         coverage=(not a.no_coverage) and d["coverage"],
         report_name=a.report_name,
+        output_stem=a.output_stem,
         quiet=a.quiet,
         singleton_floaters=(a.remove_singleton_floaters
                             or d["singleton_floaters"]),
