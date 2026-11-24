@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import re
 import shutil
@@ -16,6 +17,16 @@ from core.process_manager import ProcessManager
 from core.project_manager import ProjectError, ProjectManager
 from frontend.dashboard import Dashboard
 from frontend.workspace import Workspace
+
+
+def _available_output_path(folder: Path, stem: str, suffix: str) -> Path:
+    folder.mkdir(parents=True, exist_ok=True)
+    candidate = folder / f"{stem}{suffix}"
+    index = 2
+    while candidate.exists():
+        candidate = folder / f"{stem}_{index}{suffix}"
+        index += 1
+    return candidate
 
 
 STYLESHEET = """
@@ -90,6 +101,7 @@ class MainWindow(QMainWindow):
         self.settings = QSettings()
         self._brush_executable = self.settings.value("brush/executable", "", type=str)
         self._active_task = ""
+        self._active_result_path = ""
         self._training_steps = 0
         self._output_tail = ""
         self._last_progress_step = 0
@@ -110,6 +122,8 @@ class MainWindow(QMainWindow):
         self.workspace.import_images_requested.connect(self._import_images)
         self.workspace.prepare_images_requested.connect(self._run_preprocessing)
         self.workspace.colmap_requested.connect(self._run_colmap)
+        self.workspace.inspect_scene_requested.connect(self._inspect_scene)
+        self.workspace.optimize_scene_requested.connect(self._optimize_scene)
         self.workspace.stop_requested.connect(self.processes.stop)
         self.projects.project_opened.connect(self._on_project_opened)
         self.processes.output_received.connect(self._handle_process_output)
@@ -253,6 +267,8 @@ class MainWindow(QMainWindow):
     def _handle_process_finished(self, exit_code: int, succeeded: bool) -> None:
         task = self._active_task
         self._active_task = ""
+        result_path = self._active_result_path
+        self._active_result_path = ""
         if task != "training":
             if task == "viewer":
                 self.workspace.set_latest_update("Brush viewer closed.")
@@ -263,6 +279,29 @@ class MainWindow(QMainWindow):
                     message = f"{label} completed successfully."
                 else:
                     message = f"{label} failed with exit code {exit_code}. See the project logs folder."
+                self.workspace.set_latest_update(message)
+                self.workspace.append_output(message + "\n")
+            elif task in {"inspection", "optimization"}:
+                label = "PLY inspection" if task == "inspection" else "Scene optimization"
+                if succeeded:
+                    if task == "inspection":
+                        message = f"{label} completed successfully. Output: {result_path}"
+                    else:
+                        try:
+                            report = json.loads(Path(result_path).read_text(encoding="utf-8"))
+                            final_scene = report.get("outputs", {}).get("final_ply")
+                            if report.get("status") != "ok" or not final_scene:
+                                raise ValueError(report.get("error") or "Pipeline report has no final scene.")
+                            manager = self.projects.scene_manager
+                            if manager is None:
+                                raise ValueError("No project scene manager is available.")
+                            manager.register_output(final_scene, "optimized")
+                            self._refresh_scene_count()
+                            message = f"{label} completed successfully. Final scene: {final_scene}"
+                        except (OSError, ValueError, json.JSONDecodeError) as exc:
+                            message = f"{label} finished, but Studio could not register the result: {exc}"
+                else:
+                    message = f"{label} failed with exit code {exit_code}. See the console for details."
                 self.workspace.set_latest_update(message)
                 self.workspace.append_output(message + "\n")
             return
@@ -336,6 +375,88 @@ class MainWindow(QMainWindow):
             self.processes.start(brush, [scene, "--with-viewer"], working_directory=str(project))
         except RuntimeError as exc:
             self._active_task = ""
+            self.workspace.append_output(f"{exc}\n")
+
+    def _inspect_scene(self) -> None:
+        project = self.projects.current_project
+        if project is None:
+            QMessageBox.information(self, "Open a project", "Open a project before inspecting a scene.")
+            return
+        if self.processes.is_running:
+            QMessageBox.information(self, "Process running", "Wait for the current process to finish first.")
+            return
+        scenes = project / "scenes"
+        scene, _ = QFileDialog.getOpenFileName(
+            self, "Choose Gaussian scene to inspect", str(scenes), "PLY scenes (*.ply)"
+        )
+        if not scene:
+            return
+        report = _available_output_path(project / "results", f"{Path(scene).stem}_inspection", ".json")
+        self._active_task = "inspection"
+        self._active_result_path = str(report)
+        self.workspace.append_output(f"Inspecting PLY scene: {scene}\nReport: {report}\n")
+        try:
+            self.processes.start(
+                sys.executable,
+                ["-u", "-m", "optimization.inspect_ply", "--ply", scene, "--json", str(report)],
+                working_directory=str(Path(__file__).resolve().parents[1]),
+            )
+        except RuntimeError as exc:
+            self._active_task = ""
+            self._active_result_path = ""
+            self.workspace.append_output(f"{exc}\n")
+
+    def _optimize_scene(self) -> None:
+        project = self.projects.current_project
+        if project is None:
+            QMessageBox.information(self, "Open a project", "Open a project before optimizing a scene.")
+            return
+        if self.processes.is_running:
+            QMessageBox.information(self, "Process running", "Wait for the current process to finish first.")
+            return
+        manager = self.projects.scene_manager
+        scenes = manager.discover("original") if manager is not None else []
+        if not scenes:
+            QMessageBox.information(
+                self, "No original scenes", f"No original PLY scenes found in:\n{project / 'scenes' / 'original'}"
+            )
+            return
+        options = [f"{record.name} ({record.size_bytes / 1e6:.2f} MB)" for record in scenes]
+        selected, accepted = QInputDialog.getItem(
+            self, "Choose scene to optimize", "Original scenes:", options, 0, False
+        )
+        if not accepted:
+            return
+        scene = next(record.path for record, option in zip(scenes, options) if option == selected)
+        stem = scene.stem
+        output_folder = project / "scenes" / "optimized"
+        results_folder = project / "results"
+        output_stem = stem
+        index = 2
+        while (
+            (output_folder / f"{output_stem}_smart.ply").exists()
+            or (results_folder / f"{output_stem}_pipeline.json").exists()
+        ):
+            output_stem = f"{stem}_{index}"
+            index += 1
+        report = results_folder / f"{output_stem}_pipeline.json"
+        self._active_task = "optimization"
+        self._active_result_path = str(report)
+        self.workspace.append_output(
+            f"Starting Gaussian optimization pipeline.\nInput: {scene}\nProject: {project}\n"
+            f"Output name: {output_stem}_smart.ply\n"
+        )
+        try:
+            self.processes.start(
+                sys.executable,
+                ["-u", "-m", "optimization.pipeline", "--input", str(scene),
+                 "--output-dir", str(project), "--output-stem", output_stem,
+                 "--report-name", report.name],
+                working_directory=str(Path(__file__).resolve().parents[1]),
+            )
+        except RuntimeError as exc:
+            self._active_task = ""
+            self._active_result_path = ""
             self.workspace.append_output(f"{exc}\n")
 
     def _import_images(self) -> None:

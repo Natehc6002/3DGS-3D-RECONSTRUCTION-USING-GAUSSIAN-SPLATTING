@@ -18,6 +18,8 @@ class Workspace(QWidget):
     import_images_requested = Signal()
     prepare_images_requested = Signal()
     colmap_requested = Signal()
+    inspect_scene_requested = Signal()
+    optimize_scene_requested = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -139,6 +141,17 @@ class Workspace(QWidget):
         pipeline_actions.addWidget(run_colmap)
         pipeline_actions.addStretch(1)
         controls_layout.addLayout(pipeline_actions)
+        optimization_actions = QHBoxLayout()
+        inspect_scene = QPushButton("Inspect PLY")
+        inspect_scene.setObjectName("secondaryButton")
+        inspect_scene.clicked.connect(self.inspect_scene_requested.emit)
+        optimize_scene = QPushButton("Optimize scene")
+        optimize_scene.setObjectName("secondaryButton")
+        optimize_scene.clicked.connect(self.optimize_scene_requested.emit)
+        optimization_actions.addWidget(inspect_scene)
+        optimization_actions.addWidget(optimize_scene)
+        optimization_actions.addStretch(1)
+        controls_layout.addLayout(optimization_actions)
         center.addWidget(controls)
         body.addLayout(center, 1)
 
