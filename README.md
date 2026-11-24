@@ -22,7 +22,17 @@ See [backend/SETUP.md](backend/SETUP.md) for COLMAP and Brush versions, the proj
 
 See [optimization/README.md](optimization/README.md) for the PLY inspection, pruning, mirror-clip and normalisation tools plus the end-to-end pipeline, [optimization/results/NEXT_SCENES.md](optimization/results/NEXT_SCENES.md) for the per-scene run checklist, and [optimization/results/BRUSH_CHECKLIST.md](optimization/results/BRUSH_CHECKLIST.md) for the Brush A-D verification of the clip/normalise stages.
 
-The desktop app provides project creation/opening and a workspace. Its Brush integration uses the backend runner so the GUI can show checkpoint progress and detect incomplete runs.
+The desktop workspace also provides **Inspect PLY**, **Optimize scene**, **Evaluate scenes**, and **View results** actions.
+
+### Optimize and evaluate a scene
+
+1. Click **Optimize scene** and choose an original PLY. Studio runs the default smart-pruning and coverage stages. The original stays unchanged, and each run gets a unique output name under `scenes/optimized/`.
+2. Click **Evaluate scenes**, choose the original PLY, then select one or more optimized PLY files. Studio compares Gaussian counts, file sizes, size ratios, processing times when available, and a voxel coverage proxy. It saves CSV and Markdown reports with unique names in the project’s `results/` folder.
+3. Click **View results** and choose an evaluation CSV to see the main comparison fields in a table.
+
+Coverage is a geometric proxy, not an image-quality score. PSNR, SSIM, and FPS are reported as not measured. Brush status is recorded only from manual visual checks.
+
+The Brush integration uses the backend runner so the GUI can show checkpoint progress and detect incomplete runs.
 
 ## Windows desktop workflow
 
